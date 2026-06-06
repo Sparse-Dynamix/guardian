@@ -439,9 +439,9 @@ Implementation notes:
 
 - Linux/macOS: hook `connect` from libc
 - Windows: hook `connect` + **`WSAConnect`** in `ws2_32.dll` (same redirect logic; some apps use Winsock2 entry point only)
-- macOS: codesign / reduced SIP may be required for some targets
-- Linux: `kernel.yama.ptrace_scope` / permissions for injecting unprivileged targets
-- Windows: elevated targets may need admin; ship `frida-core` DLL beside `guardian.exe`
+- Linux: spawn same-user works at default `ptrace_scope=1`; root or `sysctl …=0` needed at scope 2, for other users, setuid targets, or Docker default seccomp
+- macOS: `task_for_pid` via taskgate (or `system.privilege.taskport` over SSH); SIP blocks platform binaries; Hardened Runtime blocks agent load without `disable-library-validation`
+- Windows: match integrity level (run guardian elevated to wrap elevated children); PPL/AV block injection; ship `frida-core` DLL beside `guardian.exe`
 - WSL2: injects Linux ELF only — document that Windows `.exe` children from WSL are out of scope
 
 ### 4b. CA trust automation ([`ca.rs`](src/ca.rs)) — mkcert-inspired
@@ -747,7 +747,7 @@ cargo zigbuild --release --target universal2-apple-darwin
 | Default connect filter | IPv4 | IPv4 | `true` |
 | `--bind` honored in hook | `BIND_HOST` octets | same | same |
 | Go HTTPS via env | `SSL_CERT_FILE` | same | system store only (caveat) |
-| Frida permissions | ptrace / Yama | codesign / SIP | admin for elevated targets |
+| Frida permissions | ptrace/Yama (scope 2, setuid, Docker seccomp) | task_for_pid / SIP / Hardened Runtime | match IL; PPL blocks |
 
 \*Subject to Frida injection succeeding on the target binary.
 
