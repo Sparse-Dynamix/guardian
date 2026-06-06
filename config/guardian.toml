@@ -1,0 +1,7 @@
+bind = "127.0.0.1"
+# port = 8080   # optional; omit for PID-based auto allocation (must be 1024..=65535)
+body_limit = 256
+# filter — omit to use platform default (IPv4 on Unix, true on Windows)
+# filter = "sa_family == 2 || sa_family == 0"
+ca_dir = "~/.proxelar"
+silent = false

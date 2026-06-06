@@ -1,0 +1,32 @@
+[package]
+name = "guardian"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Cross-platform Frida + Proxelar network wrapper"
+build = "build.rs"
+
+[dependencies]
+frida = { version = "0.17", features = ["auto-download"] }
+frida-sys = "0.17"
+proxyapi = "0.4"
+proxyapi_models = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+config = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tokio-util = "0.7"
+dirs = "6"
+anyhow = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-native-certs = "0.8"
+libc = "0.2"
+http = "1"
+bytes = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
