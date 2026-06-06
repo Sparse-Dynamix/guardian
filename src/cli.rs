@@ -16,13 +16,13 @@ pub struct Cli {
     #[arg(long)]
     pub silent: bool,
 
-    /// Proxy listen port (overrides PID-based auto allocation).
+    /// Proxy listen port (overrides auto allocation).
     #[arg(short = 'p', long)]
     pub port: Option<u16>,
 
     /// Proxy bind IPv4 address (also used as BIND_HOST in connect hook).
-    #[arg(short = 'b', long, default_value = "127.0.0.1")]
-    pub bind: String,
+    #[arg(short = 'b', long)]
+    pub bind: Option<String>,
 
     /// Proxelar CA directory.
     #[arg(long)]

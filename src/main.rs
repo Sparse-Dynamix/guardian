@@ -24,7 +24,18 @@ use crate::config::{resolve_settings, Settings};
 
 struct PrefixedStderr {
     inner: std::io::Stderr,
+    prefix: String,
     pending_prefix: bool,
+}
+
+impl PrefixedStderr {
+    fn new(prefix: String) -> Self {
+        Self {
+            inner: std::io::stderr(),
+            prefix,
+            pending_prefix: true,
+        }
+    }
 }
 
 impl Write for PrefixedStderr {
@@ -38,7 +49,7 @@ impl Write for PrefixedStderr {
             }
             if !chunk.is_empty() || written == 0 {
                 if self.pending_prefix || written == 0 {
-                    self.inner.write_all(b"guardian: ")?;
+                    self.inner.write_all(self.prefix.as_bytes())?;
                     self.pending_prefix = false;
                 }
                 self.inner.write_all(chunk)?;
@@ -57,17 +68,15 @@ impl Write for PrefixedStderr {
     }
 }
 
-fn init_tracing(verbose: bool) {
+fn init_tracing(verbose: bool, settings: &Settings) {
     let env_filter = if verbose || std::env::var_os("RUST_LOG").is_some() {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("guardian=debug"))
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(&settings.tracing_default_level))
     } else {
         EnvFilter::new("off")
     };
 
-    let writer = Mutex::new(PrefixedStderr {
-        inner: std::io::stderr(),
-        pending_prefix: true,
-    });
+    let writer = Mutex::new(PrefixedStderr::new(settings.tracing_prefix.clone()));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -89,15 +98,16 @@ fn normalize_exit_code(code: i32) -> i32 {
 async fn run(settings: Settings) -> Result<i32> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let mut ca_trust = CaTrust::from_ca_dir(&settings.ca_dir);
+    let mut ca_trust = CaTrust::from_settings(&settings);
     Ssl::load_or_generate(&settings.ca_dir).context("failed to load/generate Proxelar CA")?;
     ca_trust
-        .ensure_artifacts()
+        .ensure_artifacts(&settings)
         .context("failed to prepare CA trust artifacts")?;
 
     let bind_ip: IpAddr = settings.bind.into();
     let (port_tx, port_rx) = mpsc::channel::<u16>();
     let (proxy_ready_tx, proxy_ready_rx) = mpsc::channel::<()>();
+    let (interrupt_tx, interrupt_rx) = mpsc::channel::<()>();
 
     let settings_arc = Arc::new(settings.clone());
     let ca_arc = Arc::new(ca_trust);
@@ -112,6 +122,7 @@ async fn run(settings: Settings) -> Result<i32> {
                 bind_ip,
                 port_tx,
                 proxy_ready_rx,
+                interrupt_rx,
             )
         }
     });
@@ -121,14 +132,9 @@ async fn run(settings: Settings) -> Result<i32> {
         .context("port channel join failed")?
         .context("failed to receive allocated port")?;
 
-    let proxy_handle = proxy::start_proxy_and_wait(
-        bind_ip,
-        port,
-        &settings.ca_dir,
-        settings.body_limit,
-    )
-    .await
-    .context("failed to start embedded proxy")?;
+    let proxy_handle = proxy::start_proxy_and_wait(&settings, bind_ip, port)
+        .await
+        .context("failed to start embedded proxy")?;
 
     proxy_ready_tx
         .send(())
@@ -141,23 +147,28 @@ async fn run(settings: Settings) -> Result<i32> {
     let event_rx = proxy_handle.event_rx;
 
     let jsonl_task = tokio::spawn(async move {
-        jsonl::run_sink(event_rx, silent, body_limit).await;
+        let result = jsonl::run_sink(event_rx, silent, body_limit).await;
         jsonl_cancel.cancel();
+        result
     });
 
     let ctrl_c = cancel.clone();
     let proxy_cancel = proxy_handle.cancel.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+    let ctrl_c_task = tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for Ctrl+C");
+        let _ = interrupt_tx.send(());
         ctrl_c.cancel();
         proxy_cancel.cancel();
     });
 
     let outcome = injection.await.context("injection join failed")??;
 
+    ctrl_c_task.abort();
     proxy_handle.cancel.cancel();
     cancel.cancel();
-    let _ = jsonl_task.await;
+    jsonl_task.await.context("jsonl task join failed")??;
 
     Ok(normalize_exit_code(outcome.exit_code))
 }
@@ -165,9 +176,8 @@ async fn run(settings: Settings) -> Result<i32> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
-
     let settings = resolve_settings(&cli)?;
+    init_tracing(cli.verbose, &settings);
     let code = run(settings).await?;
     std::process::exit(code);
 }

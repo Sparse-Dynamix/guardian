@@ -8,7 +8,10 @@ use serde_json::json;
 
 use crate::ca::CaTrust;
 use crate::config::Settings;
-use crate::frida_ext::{connect_device_child_signals, enable_child_gating, DeviceSignalHandle};
+use crate::frida_ext::{
+    connect_device_child_signals, connect_session_detached, enable_child_gating,
+    is_process_replaced, DeviceSignalHandle, SessionSignalHandle,
+};
 use crate::port::resolve_listen_port;
 
 const CONNECT_HOOK_TEMPLATE: &str = include_str!("../assets/connect_hook.js");
@@ -18,6 +21,17 @@ const ENV_INJECT_TEMPLATE: &str = include_str!("../assets/env_inject.js");
 pub struct HookBundle {
     pub connect_hook: String,
     pub env_inject: String,
+}
+
+enum ProcessEvent {
+    ChildAdded(u32),
+    ChildRemoved(u32),
+    ProcessReplaced(u32),
+}
+
+struct TrackedSession<'a> {
+    _session: frida::Session<'a>,
+    _detached: SessionSignalHandle,
 }
 
 pub fn build_hook_bundle(
@@ -46,18 +60,22 @@ pub fn build_hook_bundle(
 
 fn instrument<'a>(
     device: &'a frida::Device<'a>,
-    sessions: &mut HashMap<u32, frida::Session<'a>>,
+    sessions: &mut HashMap<u32, TrackedSession<'a>>,
     pid: u32,
     hook_bundle: &HookBundle,
+    event_tx: &Sender<ProcessEvent>,
 ) -> Result<()> {
-    if sessions.contains_key(&pid) {
-        return Ok(());
-    }
-
     let session = device
         .attach(pid)
         .with_context(|| format!("failed to attach to pid {pid}"))?;
     enable_child_gating(&session)?;
+
+    let tx = event_tx.clone();
+    let detached = connect_session_detached(&session, move |reason| {
+        if is_process_replaced(reason) {
+            let _ = tx.send(ProcessEvent::ProcessReplaced(pid));
+        }
+    });
 
     let mut connect_opt = ScriptOption::new().set_name("guardian-connect");
     let connect_script = session
@@ -81,7 +99,14 @@ fn instrument<'a>(
     device
         .resume(pid)
         .with_context(|| format!("failed to resume pid {pid}"))?;
-    sessions.insert(pid, session);
+
+    sessions.insert(
+        pid,
+        TrackedSession {
+            _session: session,
+            _detached: detached,
+        },
+    );
     Ok(())
 }
 
@@ -96,6 +121,7 @@ pub fn run_injection_coordinated(
     bind_ip: IpAddr,
     port_tx: Sender<u16>,
     proxy_ready_rx: Receiver<()>,
+    interrupt_rx: Receiver<()>,
 ) -> Result<SpawnOutcome> {
     let parent_env: Vec<(String, String)> = std::env::vars().collect();
     let spawn_env = ca_trust.env_for_child(&parent_env);
@@ -106,22 +132,22 @@ pub fn run_injection_coordinated(
         .get_device_by_type(DeviceType::Local)
         .context("failed to get local Frida device")?;
 
-    let (child_tx, child_rx) = std::sync::mpsc::channel::<u32>();
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<ProcessEvent>();
 
     let _device_signals: DeviceSignalHandle = connect_device_child_signals(
         &device,
         {
-            let tx = child_tx.clone();
+            let tx = event_tx.clone();
             move |pid| {
                 tracing::debug!(target: "guardian", "child-added pid={pid}");
-                let _ = tx.send(pid);
+                let _ = tx.send(ProcessEvent::ChildAdded(pid));
             }
         },
         {
-            let tx = child_tx.clone();
+            let tx = event_tx.clone();
             move |pid| {
                 tracing::debug!(target: "guardian", "child-removed pid={pid}");
-                let _ = tx.send(pid.wrapping_add(1_000_000_000));
+                let _ = tx.send(ProcessEvent::ChildRemoved(pid));
             }
         },
     )?;
@@ -138,8 +164,13 @@ pub fn run_injection_coordinated(
         .spawn(&settings.program, &mut spawn_options)
         .context("frida spawn failed")?;
 
-    let port = resolve_listen_port(root_pid, bind_ip, settings.port)
-        .context("failed to resolve proxy listen port")?;
+    let port = resolve_listen_port(
+        bind_ip,
+        settings.port,
+        settings.port_min,
+        settings.port_max,
+    )
+    .context("failed to resolve proxy listen port")?;
 
     port_tx
         .send(port)
@@ -150,17 +181,26 @@ pub fn run_injection_coordinated(
         .map_err(|_| anyhow::anyhow!("proxy coordinator dropped before ready"))?;
 
     let hook_bundle = build_hook_bundle(port, &settings.filter, settings.bind, ca_trust)?;
-    let mut sessions: HashMap<u32, frida::Session<'_>> = HashMap::new();
+    let mut sessions: HashMap<u32, TrackedSession<'_>> = HashMap::new();
 
-    instrument(&device, &mut sessions, root_pid, &hook_bundle)
-        .context("failed to instrument root process")?;
+    instrument(
+        &device,
+        &mut sessions,
+        root_pid,
+        &hook_bundle,
+        &event_tx,
+    )
+    .context("failed to instrument root process")?;
 
     let exit_code = wait_for_root(
         root_pid,
-        &child_rx,
+        &event_rx,
+        &interrupt_rx,
         &device,
         &mut sessions,
         &hook_bundle,
+        &event_tx,
+        settings.process_poll_interval_ms,
     )?;
 
     Ok(SpawnOutcome { exit_code })
@@ -168,30 +208,46 @@ pub fn run_injection_coordinated(
 
 fn wait_for_root<'a>(
     root_pid: u32,
-    child_rx: &std::sync::mpsc::Receiver<u32>,
+    event_rx: &std::sync::mpsc::Receiver<ProcessEvent>,
+    interrupt_rx: &std::sync::mpsc::Receiver<()>,
     device: &'a frida::Device<'a>,
-    sessions: &mut HashMap<u32, frida::Session<'a>>,
+    sessions: &mut HashMap<u32, TrackedSession<'a>>,
     hook_bundle: &HookBundle,
+    event_tx: &Sender<ProcessEvent>,
+    process_poll_interval_ms: u64,
 ) -> Result<i32> {
     loop {
-        while let Ok(event_pid) = child_rx.try_recv() {
-            if event_pid >= 1_000_000_000 {
-                let removed = event_pid - 1_000_000_000;
-                sessions.remove(&removed);
-                continue;
-            }
-            if let Err(e) = instrument(device, sessions, event_pid, hook_bundle) {
-                tracing::warn!(target: "guardian", "failed to instrument child {event_pid}: {e}");
+        if interrupt_rx.try_recv().is_ok() {
+            sessions.clear();
+            return Ok(130);
+        }
+
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                ProcessEvent::ChildRemoved(pid) => {
+                    sessions.remove(&pid);
+                }
+                ProcessEvent::ProcessReplaced(pid) => {
+                    sessions.remove(&pid);
+                    instrument(device, sessions, pid, hook_bundle, event_tx)
+                        .with_context(|| format!("failed to re-instrument pid {pid} after process replacement"))?;
+                }
+                ProcessEvent::ChildAdded(pid) => {
+                    instrument(device, sessions, pid, hook_bundle, event_tx)
+                        .with_context(|| format!("failed to instrument child {pid}"))?;
+                }
             }
         }
 
         match try_wait_pid(root_pid) {
             WaitStatus::Exited(code) => return Ok(code),
             WaitStatus::StillRunning => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    process_poll_interval_ms,
+                ));
             }
             WaitStatus::Error(e) => {
-                anyhow::bail!("waitpid failed for {root_pid}: {e}");
+                anyhow::bail!("wait failed for {root_pid}: {e}");
             }
         }
     }
@@ -223,9 +279,46 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
         WaitStatus::Exited(1)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = pid;
-        WaitStatus::StillRunning
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+            SYNCHRONIZE,
+        };
+
+        const STILL_ACTIVE: u32 = 259;
+
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if handle == 0 {
+            return WaitStatus::Error(std::io::Error::last_os_error());
+        }
+
+        let wait = unsafe { WaitForSingleObject(handle, 0) };
+        if wait == WAIT_TIMEOUT {
+            unsafe { CloseHandle(handle) };
+            return WaitStatus::StillRunning;
+        }
+        if wait != WAIT_OBJECT_0 {
+            unsafe { CloseHandle(handle) };
+            return WaitStatus::Error(std::io::Error::last_os_error());
+        }
+
+        let mut code: u32 = 0;
+        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return WaitStatus::Error(std::io::Error::last_os_error());
+        }
+        if code == STILL_ACTIVE {
+            return WaitStatus::StillRunning;
+        }
+        WaitStatus::Exited(code as i32)
     }
 }

@@ -1,3 +1,0 @@
-# Cross-compilation linker overrides are applied by scripts/build-release.sh
-# (cargo-zigbuild / cargo-xwin). Do not set `linker = "zig"` here — it breaks
-# plain `cargo build` on machines without Zig installed.

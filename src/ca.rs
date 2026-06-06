@@ -5,10 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-const BUNDLE_NAME: &str = "guardian-ca-bundle.pem";
+use crate::config::Settings;
+
 const PROXELAR_CA: &str = "proxelar-ca.pem";
-const JAVA_TRUSTSTORE: &str = "guardian-java-truststore.p12";
-const JAVA_PASSWORD: &str = "guardian";
 
 /// PEM path env vars pointing at the combined CA bundle.
 const PEM_ENV_VARS: &[&str] = &[
@@ -33,19 +32,25 @@ pub struct CaTrust {
     caroot: PathBuf,
     ca_bundle: PathBuf,
     java_truststore: Option<PathBuf>,
+    java_truststore_password: String,
+    deno_tls_ca_store: String,
+    node_options_append: String,
 }
 
 impl CaTrust {
-    pub fn from_ca_dir(ca_dir: &Path) -> Self {
-        let caroot = ca_dir.to_path_buf();
+    pub fn from_settings(settings: &Settings) -> Self {
+        let caroot = settings.ca_dir.clone();
         Self {
-            ca_bundle: caroot.join(BUNDLE_NAME),
+            ca_bundle: caroot.join(&settings.ca_bundle_name),
             caroot,
             java_truststore: None,
+            java_truststore_password: settings.java_truststore_password.clone(),
+            deno_tls_ca_store: settings.deno_tls_ca_store.clone(),
+            node_options_append: settings.node_options_append.clone(),
         }
     }
 
-    pub fn ensure_artifacts(&mut self) -> Result<()> {
+    pub fn ensure_artifacts(&mut self, settings: &Settings) -> Result<()> {
         fs::create_dir_all(&self.caroot).with_context(|| {
             format!("failed to create CA directory {}", self.caroot.display())
         })?;
@@ -69,7 +74,8 @@ impl CaTrust {
         fs::write(&self.ca_bundle, &bundle)
             .with_context(|| format!("failed to write {}", self.ca_bundle.display()))?;
 
-        self.java_truststore = build_java_truststore(&self.caroot, &proxelar_ca).ok();
+        self.java_truststore =
+            build_java_truststore(&self.caroot, &proxelar_ca, settings).ok();
         Ok(())
     }
 
@@ -85,23 +91,28 @@ impl CaTrust {
         }
 
         if !parent.contains_key("DENO_TLS_CA_STORE") {
-            out.push(("DENO_TLS_CA_STORE".to_string(), "system,mozilla".to_string()));
+            out.push((
+                "DENO_TLS_CA_STORE".to_string(),
+                self.deno_tls_ca_store.clone(),
+            ));
         }
 
+        let node_flag = &self.node_options_append;
         if !parent.contains_key("NODE_OPTIONS") {
-            out.push(("NODE_OPTIONS".to_string(), "--use-openssl-ca".to_string()));
+            out.push(("NODE_OPTIONS".to_string(), node_flag.clone()));
         } else if let Some(existing) = parent.get("NODE_OPTIONS") {
-            if !existing.contains("--use-openssl-ca") {
+            if !existing.contains(node_flag) {
                 out.push((
                     "NODE_OPTIONS".to_string(),
-                    format!("{existing} --use-openssl-ca"),
+                    format!("{existing} {node_flag}"),
                 ));
             }
         }
 
         if let Some(store) = &self.java_truststore {
+            let pwd = &self.java_truststore_password;
             let flag = format!(
-                "-Djavax.net.ssl.trustStore={} -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword={JAVA_PASSWORD}",
+                "-Djavax.net.ssl.trustStore={} -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword={pwd}",
                 store.display()
             );
             if !parent.contains_key("JAVA_TOOL_OPTIONS") {
@@ -122,12 +133,9 @@ impl CaTrust {
             .map(|(k, v)| format!("{k}={v}"))
             .collect()
     }
-
-    pub fn caroot(&self) -> &Path {
-        &self.caroot
-    }
 }
 
+#[cfg(test)]
 pub fn merge_env_pairs(
     existing: &[(String, String)],
     ca_pairs: &[(String, String)],
@@ -182,70 +190,41 @@ fn find_keytool() -> Option<PathBuf> {
     })
 }
 
-fn build_java_truststore(caroot: &Path, proxelar_ca: &Path) -> Result<PathBuf> {
+fn build_java_truststore(
+    caroot: &Path,
+    proxelar_ca: &Path,
+    settings: &Settings,
+) -> Result<PathBuf> {
     let keytool = find_keytool().context("keytool not found")?;
-    let out = caroot.join(JAVA_TRUSTSTORE);
+    let password = &settings.java_truststore_password;
+    let out = caroot.join(&settings.java_truststore_name);
     let tmp = caroot.join("guardian-java-truststore.jks");
 
-    let cacerts = std::env::var("JAVA_HOME")
-        .ok()
-        .map(|jh| PathBuf::from(jh).join("lib/security/cacerts"))
-        .filter(|p| p.exists());
+    let java_home = std::env::var("JAVA_HOME").context("JAVA_HOME not set")?;
+    let cacerts = PathBuf::from(&java_home).join("lib/security/cacerts");
+    if !cacerts.is_file() {
+        anyhow::bail!("JVM cacerts not found at {}", cacerts.display());
+    }
 
-    if let Some(cacerts) = cacerts {
-        let status = Command::new(&keytool)
-            .args([
-                "-importkeystore",
-                "-srckeystore",
-                cacerts.to_str().unwrap(),
-                "-destkeystore",
-                tmp.to_str().unwrap(),
-                "-deststoretype",
-                "JKS",
-                "-srcstorepass",
-                "changeit",
-                "-deststorepass",
-                JAVA_PASSWORD,
-                "-noprompt",
-            ])
-            .status()
-            .context("keytool importkeystore failed")?;
-        if !status.success() {
-            anyhow::bail!("keytool importkeystore exited with {status}");
-        }
-    } else {
-        let status = Command::new(&keytool)
-            .args([
-                "-genkeypair",
-                "-alias",
-                "dummy",
-                "-keystore",
-                tmp.to_str().unwrap(),
-                "-storepass",
-                JAVA_PASSWORD,
-                "-keypass",
-                JAVA_PASSWORD,
-                "-dname",
-                "CN=guardian",
-                "-noprompt",
-            ])
-            .status()
-            .context("keytool genkeypair failed")?;
-        if !status.success() {
-            anyhow::bail!("keytool genkeypair exited with {status}");
-        }
-        let _ = Command::new(&keytool)
-            .args([
-                "-delete",
-                "-alias",
-                "dummy",
-                "-keystore",
-                tmp.to_str().unwrap(),
-                "-storepass",
-                JAVA_PASSWORD,
-                "-noprompt",
-            ])
-            .status();
+    let status = Command::new(&keytool)
+        .args([
+            "-importkeystore",
+            "-srckeystore",
+            cacerts.to_str().unwrap(),
+            "-destkeystore",
+            tmp.to_str().unwrap(),
+            "-deststoretype",
+            "JKS",
+            "-srcstorepass",
+            "changeit",
+            "-deststorepass",
+            password,
+            "-noprompt",
+        ])
+        .status()
+        .context("keytool importkeystore failed")?;
+    if !status.success() {
+        anyhow::bail!("keytool importkeystore exited with {status}");
     }
 
     let status = Command::new(&keytool)
@@ -258,7 +237,7 @@ fn build_java_truststore(caroot: &Path, proxelar_ca: &Path) -> Result<PathBuf> {
             "-keystore",
             tmp.to_str().unwrap(),
             "-storepass",
-            JAVA_PASSWORD,
+            password,
             "-noprompt",
         ])
         .status()
@@ -277,9 +256,9 @@ fn build_java_truststore(caroot: &Path, proxelar_ca: &Path) -> Result<PathBuf> {
             "-deststoretype",
             "PKCS12",
             "-srcstorepass",
-            JAVA_PASSWORD,
+            password,
             "-deststorepass",
-            JAVA_PASSWORD,
+            password,
             "-noprompt",
         ])
         .status()

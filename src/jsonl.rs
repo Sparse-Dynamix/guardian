@@ -148,16 +148,15 @@ pub async fn run_sink(
     mut rx: tokio::sync::mpsc::Receiver<ProxyEvent>,
     silent: bool,
     body_limit: usize,
-) {
+) -> Result<()> {
     while let Some(event) = rx.recv().await {
         if silent {
             continue;
         }
         let mut stderr = io::stderr().lock();
-        if let Err(e) = write_event(&mut stderr, &event, body_limit) {
-            tracing::warn!("jsonl write failed: {e}");
-        }
+        write_event(&mut stderr, &event, body_limit)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

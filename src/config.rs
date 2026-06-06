@@ -16,6 +16,19 @@ pub struct FileSettings {
     pub filter: Option<String>,
     pub ca_dir: String,
     pub silent: bool,
+    pub port_min: u16,
+    pub port_max: u16,
+    pub proxy_event_channel_capacity: usize,
+    pub proxy_ready_timeout_secs: u64,
+    pub proxy_ready_poll_ms: u64,
+    pub process_poll_interval_ms: u64,
+    pub ca_bundle_name: String,
+    pub java_truststore_name: String,
+    pub java_truststore_password: String,
+    pub deno_tls_ca_store: String,
+    pub node_options_append: String,
+    pub tracing_prefix: String,
+    pub tracing_default_level: String,
 }
 
 impl Default for FileSettings {
@@ -27,6 +40,19 @@ impl Default for FileSettings {
             filter: None,
             ca_dir: "~/.proxelar".to_string(),
             silent: false,
+            port_min: 1024,
+            port_max: 65535,
+            proxy_event_channel_capacity: 10_000,
+            proxy_ready_timeout_secs: 5,
+            proxy_ready_poll_ms: 10,
+            process_poll_interval_ms: 50,
+            ca_bundle_name: "guardian-ca-bundle.pem".to_string(),
+            java_truststore_name: "guardian-java-truststore.p12".to_string(),
+            java_truststore_password: "guardian".to_string(),
+            deno_tls_ca_store: "system,mozilla".to_string(),
+            node_options_append: "--use-openssl-ca".to_string(),
+            tracing_prefix: "guardian: ".to_string(),
+            tracing_default_level: "guardian=debug".to_string(),
         }
     }
 }
@@ -39,19 +65,32 @@ pub struct Settings {
     pub filter: String,
     pub ca_dir: PathBuf,
     pub silent: bool,
+    pub port_min: u16,
+    pub port_max: u16,
+    pub proxy_event_channel_capacity: usize,
+    pub proxy_ready_timeout_secs: u64,
+    pub proxy_ready_poll_ms: u64,
+    pub process_poll_interval_ms: u64,
+    pub ca_bundle_name: String,
+    pub java_truststore_name: String,
+    pub java_truststore_password: String,
+    pub deno_tls_ca_store: String,
+    pub node_options_append: String,
+    pub tracing_prefix: String,
+    pub tracing_default_level: String,
     pub program: String,
     pub args: Vec<String>,
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
+fn expand_tilde(path: &str) -> Result<PathBuf> {
     if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|h| h.join(rest))
-            .unwrap_or_else(|| PathBuf::from(path))
+        let home = dirs::home_dir()
+            .context("home directory not found (required for ~ paths)")?;
+        Ok(home.join(rest))
     } else if path == "~" {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+        dirs::home_dir().context("home directory not found (required for ~ path)")
     } else {
-        PathBuf::from(path)
+        Ok(PathBuf::from(path))
     }
 }
 
@@ -91,7 +130,7 @@ pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
 pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     let file = load_file_settings(cli.config.as_deref())?;
 
-    let bind_str = cli.bind.clone();
+    let bind_str = cli.bind.as_deref().unwrap_or(&file.bind);
     let port = cli.port.or(file.port);
     let body_limit = cli.body_limit.unwrap_or(file.body_limit);
     let filter = cli
@@ -99,10 +138,10 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         .clone()
         .or(file.filter)
         .unwrap_or_else(|| default_filter().to_string());
-    let ca_dir = cli
-        .ca_dir
-        .clone()
-        .unwrap_or_else(|| expand_tilde(&file.ca_dir));
+    let ca_dir = match &cli.ca_dir {
+        Some(dir) => dir.clone(),
+        None => expand_tilde(&file.ca_dir)?,
+    };
     let silent = cli.silent || file.silent;
 
     let program = cli
@@ -113,12 +152,25 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     let args = cli.program.iter().skip(1).cloned().collect();
 
     Ok(Settings {
-        bind: parse_bind_ipv4(&bind_str)?,
+        bind: parse_bind_ipv4(bind_str)?,
         port,
         body_limit,
         filter,
         ca_dir,
         silent,
+        port_min: file.port_min,
+        port_max: file.port_max,
+        proxy_event_channel_capacity: file.proxy_event_channel_capacity,
+        proxy_ready_timeout_secs: file.proxy_ready_timeout_secs,
+        proxy_ready_poll_ms: file.proxy_ready_poll_ms,
+        process_poll_interval_ms: file.process_poll_interval_ms,
+        ca_bundle_name: file.ca_bundle_name,
+        java_truststore_name: file.java_truststore_name,
+        java_truststore_password: file.java_truststore_password,
+        deno_tls_ca_store: file.deno_tls_ca_store,
+        node_options_append: file.node_options_append,
+        tracing_prefix: file.tracing_prefix,
+        tracing_default_level: file.tracing_default_level,
         program,
         args,
     })
@@ -158,5 +210,28 @@ mod tests {
         assert_eq!(settings.port, Some(9000));
         assert_eq!(settings.program, "echo");
         assert_eq!(settings.args, vec!["hi".to_string()]);
+    }
+
+    #[test]
+    fn bind_from_file_when_cli_omitted() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        let mut f = fs::File::create(&cfg_path).unwrap();
+        writeln!(f, "bind = \"10.0.0.1\"").unwrap();
+
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--",
+            "true",
+        ])
+        .unwrap();
+
+        let settings = resolve_settings(&cli).unwrap();
+        assert_eq!(
+            settings.bind,
+            Ipv4Addr::new(10, 0, 0, 1)
+        );
     }
 }

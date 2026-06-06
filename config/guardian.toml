@@ -1,7 +1,23 @@
 bind = "127.0.0.1"
-# port = 8080   # optional; omit for PID-based auto allocation (must be 1024..=65535)
+# port = 8080   # optional; omit for auto free port in [port_min, port_max]
 body_limit = 256
 # filter — omit to use platform default (IPv4 on Unix, true on Windows)
 # filter = "sa_family == 2 || sa_family == 0"
 ca_dir = "~/.proxelar"
 silent = false
+
+port_min = 1024
+port_max = 65535
+proxy_event_channel_capacity = 10000
+proxy_ready_timeout_secs = 5
+proxy_ready_poll_ms = 10
+process_poll_interval_ms = 50
+
+ca_bundle_name = "guardian-ca-bundle.pem"
+java_truststore_name = "guardian-java-truststore.p12"
+java_truststore_password = "guardian"
+deno_tls_ca_store = "system,mozilla"
+node_options_append = "--use-openssl-ca"
+
+tracing_prefix = "guardian: "
+tracing_default_level = "guardian=debug"

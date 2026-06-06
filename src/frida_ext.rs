@@ -3,8 +3,9 @@ use std::ffi::CString;
 use anyhow::{bail, Result};
 use frida::Session;
 use frida_sys::{
-    frida_child_get_pid, frida_session_enable_child_gating_sync, _frida_g_signal_connect_data,
-    _frida_g_signal_handler_disconnect, gpointer, GCallback,
+    frida_child_get_pid, frida_session_enable_child_gating_sync,
+    _frida_g_signal_connect_data, _frida_g_signal_handler_disconnect, gpointer, GCallback,
+    FridaSessionDetachReason, FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED,
 };
 
 unsafe fn session_ptr(session: &Session) -> *mut frida_sys::_FridaSession {
@@ -137,4 +138,84 @@ where
         added_id,
         removed_id,
     })
+}
+
+struct SessionDetachedCallback {
+    on_detached: Box<dyn Fn(FridaSessionDetachReason) + Send + Sync>,
+}
+
+unsafe extern "C" fn on_session_detached(
+    _session: *mut frida_sys::_FridaSession,
+    reason: FridaSessionDetachReason,
+    _crash: *mut frida_sys::_FridaCrash,
+    user_data: gpointer,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let cb = &*(user_data as *const SessionDetachedCallback);
+    (cb.on_detached)(reason);
+}
+
+unsafe extern "C" fn destroy_session_callback(
+    data: gpointer,
+    _closure: *mut frida_sys::GClosure,
+) {
+    if !data.is_null() {
+        let _ = Box::from_raw(data as *mut SessionDetachedCallback);
+    }
+}
+
+pub struct SessionSignalHandle {
+    session: usize,
+    detached_id: u64,
+}
+
+impl Drop for SessionSignalHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let session = self.session as gpointer;
+            _frida_g_signal_handler_disconnect(session, self.detached_id);
+        }
+    }
+}
+
+pub fn connect_session_detached<F>(session: &Session, on_detached: F) -> SessionSignalHandle
+where
+    F: Fn(FridaSessionDetachReason) + Send + Sync + 'static,
+{
+    let callbacks = Box::new(SessionDetachedCallback {
+        on_detached: Box::new(on_detached),
+    });
+    let user_data = Box::into_raw(callbacks) as gpointer;
+    let session_gp = unsafe { session_ptr(session) as gpointer };
+
+    let signal = CString::new("detached").unwrap();
+    let detached_id = unsafe {
+        _frida_g_signal_connect_data(
+            session_gp,
+            signal.as_ptr(),
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut frida_sys::_FridaSession,
+                    FridaSessionDetachReason,
+                    *mut frida_sys::_FridaCrash,
+                    gpointer,
+                ),
+                GCallback,
+            >(on_session_detached),
+            user_data,
+            Some(destroy_session_callback),
+            0,
+        )
+    };
+
+    SessionSignalHandle {
+        session: session_gp as usize,
+        detached_id,
+    }
+}
+
+pub fn is_process_replaced(reason: FridaSessionDetachReason) -> bool {
+    reason == FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED
 }
