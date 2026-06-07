@@ -1,0 +1,29 @@
+{
+  "name": "guardian",
+  "version": "1.0.0",
+  "description": "Run any command under transparent network interception.",
+  "type": "module",
+  "scripts": {
+    "smoke": "node --import tsx ./node_modules/zx/build/cli.js scripts/smoke.zx.ts",
+    "test": "npm run smoke",
+    "coverage": "node --import tsx ./node_modules/zx/build/cli.js scripts/coverage.zx.ts",
+    "format": "biome format --write"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sparse-Dynamix/guardian.git"
+  },
+  "keywords": [],
+  "author": "Sepehr Laal",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/Sparse-Dynamix/guardian/issues"
+  },
+  "homepage": "https://github.com/Sparse-Dynamix/guardian#readme",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
+    "zx": "^8.8.5"
+  }
+}

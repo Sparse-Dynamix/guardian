@@ -14,11 +14,11 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
         return;
     }
     let Some(sh) = staged_sh_program() else {
-        eprintln!("skipping: staged guardian-sh not found (run coverage-mac.sh once)");
+        eprintln!("skipping: staged guardian-sh not found (run scripts/coverage-mac.zx.ts once)");
         return;
     };
     let Some(curl) = staged_curl_program() else {
-        eprintln!("skipping: staged guardian-curl not found (run coverage-mac.sh once)");
+        eprintln!("skipping: staged guardian-curl not found (run scripts/coverage-mac.zx.ts once)");
         return;
     };
 

@@ -8,7 +8,7 @@ fn java_truststore_created_when_keytool_available() {
         return;
     }
     let Some(java_home) = portable_jdk_home() else {
-        eprintln!("skipping: portable JDK not found at .cache/jdk-17 (run scripts/coverage.sh once)");
+        eprintln!("skipping: portable JDK not found at .cache/jdk-17 (run scripts/coverage-linux.zx.ts once)");
         return;
     };
 
