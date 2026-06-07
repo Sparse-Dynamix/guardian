@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::config::Settings;
 
@@ -135,26 +136,22 @@ impl CaTrust {
     }
 }
 
-#[cfg(test)]
-pub fn merge_env_pairs(
-    existing: &[(String, String)],
-    ca_pairs: &[(String, String)],
-) -> Vec<(String, String)> {
-    let mut map: HashMap<String, String> = existing.iter().cloned().collect();
-    for (k, v) in ca_pairs {
-        map.entry(k.clone()).or_insert_with(|| v.clone());
+fn der_cert_to_pem(der: &[u8]) -> Vec<u8> {
+    let encoded = STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in encoded.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk).unwrap());
+        pem.push('\n');
     }
-    map.into_iter().collect()
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem.into_bytes()
 }
 
 fn load_system_roots_pem() -> Result<Vec<u8>> {
     let mut pem = Vec::new();
     let native = rustls_native_certs::load_native_certs();
     for cert in native.certs {
-        pem.extend_from_slice(&cert);
-        if !pem.ends_with(b"\n") {
-            pem.push(b'\n');
-        }
+        pem.extend_from_slice(&der_cert_to_pem(&cert));
     }
     if !pem.is_empty() {
         return Ok(pem);
@@ -269,25 +266,4 @@ fn build_java_truststore(
     }
 
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn merge_env_skips_existing_keys() {
-        let existing = vec![
-            ("SSL_CERT_FILE".to_string(), "/custom.pem".to_string()),
-            ("PATH".to_string(), "/usr/bin".to_string()),
-        ];
-        let ca = vec![
-            ("SSL_CERT_FILE".to_string(), "/bundle.pem".to_string()),
-            ("CURL_CA_BUNDLE".to_string(), "/bundle.pem".to_string()),
-        ];
-        let merged = merge_env_pairs(&existing, &ca);
-        let map: HashMap<_, _> = merged.into_iter().collect();
-        assert_eq!(map.get("SSL_CERT_FILE").unwrap(), "/custom.pem");
-        assert_eq!(map.get("CURL_CA_BUNDLE").unwrap(), "/bundle.pem");
-    }
 }

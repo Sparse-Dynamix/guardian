@@ -127,10 +127,18 @@ async fn run(settings: Settings) -> Result<i32> {
         }
     });
 
-    let port = tokio::task::spawn_blocking(move || port_rx.recv())
+    let port = match tokio::task::spawn_blocking(move || port_rx.recv())
         .await
         .context("port channel join failed")?
-        .context("failed to receive allocated port")?;
+    {
+        Ok(port) => port,
+        Err(_) => {
+            return match injection.await.context("injection join failed")? {
+                Ok(_) => Err(anyhow::anyhow!("failed to receive allocated port")),
+                Err(e) => Err(e),
+            };
+        }
+    };
 
     let proxy_handle = proxy::start_proxy_and_wait(&settings, bind_ip, port)
         .await
@@ -166,11 +174,24 @@ async fn run(settings: Settings) -> Result<i32> {
     let outcome = injection.await.context("injection join failed")??;
 
     ctrl_c_task.abort();
+    // Proxelar may emit RequestComplete from spawned tasks after the child exits.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     proxy_handle.cancel.cancel();
     cancel.cancel();
     jsonl_task.await.context("jsonl task join failed")??;
 
     Ok(normalize_exit_code(outcome.exit_code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_exit_code;
+
+    #[test]
+    fn normalize_exit_code_passes_through_on_unix() {
+        assert_eq!(normalize_exit_code(0), 0);
+        assert_eq!(normalize_exit_code(130), 130);
+    }
 }
 
 #[tokio::main]

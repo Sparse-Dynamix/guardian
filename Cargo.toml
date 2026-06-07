@@ -27,6 +27,16 @@ port_check = "0.3"
 http = "1"
 bytes = "1"
 base64 = "0.22"
+tokio-tungstenite = { version = "0.26", optional = true, features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
+
+[features]
+ws-smoke = ["dep:tokio-tungstenite", "dep:futures-util"]
+
+[[bin]]
+name = "guardian-ws-smoke"
+path = "src/bin/ws_smoke.rs"
+required-features = ["ws-smoke"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -39,3 +49,4 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"

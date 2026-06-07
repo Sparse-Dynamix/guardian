@@ -3,9 +3,16 @@ use std::ffi::CString;
 use anyhow::{bail, Result};
 use frida::Session;
 use frida_sys::{
-    frida_child_get_pid, frida_session_enable_child_gating_sync,
-    _frida_g_signal_connect_data, _frida_g_signal_handler_disconnect, gpointer, GCallback,
+    frida_child_get_pid, frida_session_enable_child_gating_sync, gpointer, GCallback,
     FridaSessionDetachReason, FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED,
+};
+
+#[cfg(windows)]
+use frida_sys::{g_signal_connect_data, g_signal_handler_disconnect};
+#[cfg(not(windows))]
+use frida_sys::{
+    _frida_g_signal_connect_data as g_signal_connect_data,
+    _frida_g_signal_handler_disconnect as g_signal_handler_disconnect,
 };
 
 unsafe fn session_ptr(session: &Session) -> *mut frida_sys::_FridaSession {
@@ -72,16 +79,21 @@ unsafe extern "C" fn destroy_device_callbacks(
 
 pub struct DeviceSignalHandle {
     device: usize,
-    added_id: u64,
-    removed_id: u64,
+    added_id: SignalHandlerId,
+    removed_id: SignalHandlerId,
 }
+
+#[cfg(windows)]
+type SignalHandlerId = u32;
+#[cfg(not(windows))]
+type SignalHandlerId = u64;
 
 impl Drop for DeviceSignalHandle {
     fn drop(&mut self) {
         unsafe {
             let device = self.device as gpointer;
-            _frida_g_signal_handler_disconnect(device, self.added_id);
-            _frida_g_signal_handler_disconnect(device, self.removed_id);
+            g_signal_handler_disconnect(device, self.added_id);
+            g_signal_handler_disconnect(device, self.removed_id);
         }
     }
 }
@@ -106,7 +118,7 @@ where
     let signal_removed = CString::new("child-removed").unwrap();
 
     let added_id = unsafe {
-        _frida_g_signal_connect_data(
+        g_signal_connect_data(
             device_gp,
             signal_added.as_ptr(),
             std::mem::transmute::<
@@ -120,7 +132,7 @@ where
     };
 
     let removed_id = unsafe {
-        _frida_g_signal_connect_data(
+        g_signal_connect_data(
             device_gp,
             signal_removed.as_ptr(),
             std::mem::transmute::<
@@ -168,14 +180,14 @@ unsafe extern "C" fn destroy_session_callback(
 
 pub struct SessionSignalHandle {
     session: usize,
-    detached_id: u64,
+    detached_id: SignalHandlerId,
 }
 
 impl Drop for SessionSignalHandle {
     fn drop(&mut self) {
         unsafe {
             let session = self.session as gpointer;
-            _frida_g_signal_handler_disconnect(session, self.detached_id);
+            g_signal_handler_disconnect(session, self.detached_id);
         }
     }
 }
@@ -192,7 +204,7 @@ where
 
     let signal = CString::new("detached").unwrap();
     let detached_id = unsafe {
-        _frida_g_signal_connect_data(
+        g_signal_connect_data(
             session_gp,
             signal.as_ptr(),
             std::mem::transmute::<

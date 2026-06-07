@@ -77,7 +77,7 @@ fn instrument<'a>(
         }
     });
 
-    let mut connect_opt = ScriptOption::new().set_name("guardian-connect");
+    let mut connect_opt = ScriptOption::new();
     let connect_script = session
         .create_script(&hook_bundle.connect_hook, &mut connect_opt)
         .context("failed to create connect hook script")?;
@@ -85,16 +85,18 @@ fn instrument<'a>(
         .load()
         .context("failed to load connect hook script")?;
 
-    let mut env_opt = ScriptOption::new().set_name("guardian-env");
+    // Frida unloads scripts when the Rust Script handle drops; leak the handle so the hook
+    // stays active for the lifetime of the session.
+    std::mem::forget(connect_script);
+
+    let mut env_opt = ScriptOption::new();
     let env_script = session
         .create_script(&hook_bundle.env_inject, &mut env_opt)
         .context("failed to create env inject script")?;
     env_script
         .load()
         .context("failed to load env inject script")?;
-
-    drop(connect_script);
-    drop(env_script);
+    std::mem::forget(env_script);
 
     device
         .resume(pid)
@@ -262,52 +264,37 @@ enum WaitStatus {
 fn try_wait_pid(pid: u32) -> WaitStatus {
     #[cfg(unix)]
     {
-        let mut status: i32 = 0;
-        let ret = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        // Frida-spawned children are not descendants of guardian; waitpid(2) returns
+        // ECHILD. Poll with kill(pid, 0) like the Windows OpenProcess path.
+        let ret = unsafe { libc::kill(pid as i32, 0) };
         if ret == 0 {
             return WaitStatus::StillRunning;
         }
-        if ret < 0 {
-            return WaitStatus::Error(std::io::Error::last_os_error());
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::ESRCH) => WaitStatus::Exited(0),
+            Some(libc::EPERM) => WaitStatus::StillRunning,
+            _ => WaitStatus::Error(err),
         }
-        if libc::WIFEXITED(status) {
-            return WaitStatus::Exited(libc::WEXITSTATUS(status));
-        }
-        if libc::WIFSIGNALED(status) {
-            return WaitStatus::Exited(128 + libc::WTERMSIG(status));
-        }
-        WaitStatus::Exited(1)
     }
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
-            SYNCHRONIZE,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
 
         const STILL_ACTIVE: u32 = 259;
 
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-                0,
-                pid,
-            )
-        };
-        if handle == 0 {
-            return WaitStatus::Error(std::io::Error::last_os_error());
-        }
-
-        let wait = unsafe { WaitForSingleObject(handle, 0) };
-        if wait == WAIT_TIMEOUT {
-            unsafe { CloseHandle(handle) };
-            return WaitStatus::StillRunning;
-        }
-        if wait != WAIT_OBJECT_0 {
-            unsafe { CloseHandle(handle) };
-            return WaitStatus::Error(std::io::Error::last_os_error());
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            let err = std::io::Error::last_os_error();
+            // Root process may have exited and PID is no longer openable (Frida spawn).
+            if matches!(err.raw_os_error(), Some(87) | Some(5)) {
+                return WaitStatus::Exited(0);
+            }
+            return WaitStatus::Error(err);
         }
 
         let mut code: u32 = 0;
@@ -320,5 +307,47 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
             return WaitStatus::StillRunning;
         }
         WaitStatus::Exited(code as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use crate::ca::CaTrust;
+    use crate::config::Settings;
+
+    use super::build_hook_bundle;
+
+    #[test]
+    fn hook_bundle_substitutes_port_and_bind() {
+        let settings = Settings {
+            bind: Ipv4Addr::LOCALHOST,
+            port: None,
+            body_limit: 256,
+            filter: "true".to_string(),
+            ca_dir: std::path::PathBuf::from("/tmp/guardian-test-ca"),
+            silent: false,
+            port_min: 1024,
+            port_max: 65535,
+            proxy_event_channel_capacity: 100,
+            proxy_ready_timeout_secs: 5,
+            proxy_ready_poll_ms: 10,
+            process_poll_interval_ms: 50,
+            ca_bundle_name: "guardian-ca-bundle.pem".to_string(),
+            java_truststore_name: "guardian-java-truststore.p12".to_string(),
+            java_truststore_password: "guardian".to_string(),
+            deno_tls_ca_store: "system,mozilla".to_string(),
+            node_options_append: "--use-openssl-ca".to_string(),
+            tracing_prefix: "guardian: ".to_string(),
+            tracing_default_level: "guardian=debug".to_string(),
+            program: "true".to_string(),
+            args: vec![],
+        };
+        let ca = CaTrust::from_settings(&settings);
+        let bundle = build_hook_bundle(12345, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains("12345"));
+        assert!(bundle.connect_hook.contains("true"));
+        assert!(bundle.env_inject.contains("SSL_CERT_FILE"));
     }
 }

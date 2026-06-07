@@ -38,7 +38,7 @@ flowchart TB
     Forward --> TLS --> Events
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect`; redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Platform-default filter when unset: IPv4 on Unix (`sa_family == 2 || sa_family == 0`), `true` on Windows.
+**Layer 1** — hook `connect()` / `WSAConnect`; redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Platform-default filter when unset: ports `80` and `443` only (see `cli::default_filter()`).
 
 **Layer 2** — `ProxyMode::Forward`, `intercept: None`, TLS MITM via Proxelar CA in `ca_dir`.
 
@@ -166,24 +166,60 @@ Binary: `target/release/guardian`. Ship `libfrida-core` beside the binary when d
 
 ## Testing
 
+Real integration only: `tests/` spawns the real `guardian` binary with Frida injection, Proxelar MITM, and live `curl` to httpbin (default `http://httpbin.org/get`; override with `SMOKE_URL`). No constructed `ProxyEvent` fixtures or proxy-only shortcuts.
+
 ```bash
-cargo test
+cargo test --features ws-smoke
 cargo build --release
 ```
 
-| Module | Coverage |
-|--------|----------|
-| `port.rs` | range validation, auto allocate, override bind / in-use |
-| `config.rs` | CLI overrides file; bind from file when CLI omitted |
-| `jsonl.rs` | HTTP serialize, truncation, skip intercepted |
-| `ca.rs` | env merge skips existing keys |
+Integration tests use `getent ahostsv4` + `curl --resolve` because DNS from hooked processes is unreliable in WSL.
 
-Manual smoke (Linux/macOS):
+| Layer | What runs |
+|-------|-----------|
+| `tests/https_*.rs`, `silent.rs`, `verbose.rs`, `fixed_port.rs`, `body_limit.rs`, `config_file.rs`, `binary_post.rs` | HTTP MITM + JSONL assertions |
+| `tests/env_*.rs`, `java_truststore.rs` | Real CA/env injection (portable JDK under `.cache/jdk-17` for PKCS12 path) |
+| `tests/websocket.rs` + `guardian-ws-smoke` bin | Live `wss://echo.websocket.org/` WebSocket JSONL |
+| `tests/invalid_bind.rs`, `spawn_failure.rs` | CLI / spawn error paths |
+| `src/port.rs`, `src/config.rs`, `src/cli.rs`, `src/injector.rs`, `src/main.rs` | Small unit tests for real parsing, hooks, and OS primitives |
+
+### Smoke (cross-built release artifacts)
+
+Prerequisites: `cargo-zigbuild`, `cargo-xwin`, `curl`, Frida devkits via `frida` crate `auto-download`.
 
 ```bash
-guardian -- curl -s https://httpbin.org/get
-guardian -- sh -c 'curl -s https://httpbin.org/get'
+./scripts/build-smoke.sh          # zigbuild linux-gnu + xwin windows-msvc + stage runtime libs
+./scripts/smoke/run.sh            # Linux ELF smoke (WSL)
+./scripts/smoke-all.sh            # build-smoke + Linux smoke + Windows smoke via powershell.exe
 ```
+
+Override cross-built binary during dev: `GUARDIAN_BIN=target/debug/guardian ./scripts/smoke/run.sh`.
+
+Windows smoke uses a native MSVC build via `scripts/build-win-smoke.ps1` (syncs to `%USERPROFILE%\guardian-smoke-build` on NTFS). Requires Strawberry Perl + LLVM (`LIBCLANG_PATH`) on the Windows host for Frida bindgen/OpenSSL.
+
+`SMOKE_URL` overrides the default live endpoint. `SMOKE_SKIP_BUILD=1` skips `build-smoke.sh` in `smoke-all.sh`.
+
+### Coverage (~90% per OS)
+
+Prerequisites: `cargo install cargo-llvm-cov`, `rustup component add llvm-tools-preview` (WSL and Windows host). `coverage.sh` downloads a portable Temurin JDK 17 into `.cache/jdk-17` so the Java truststore path is exercised.
+
+Windows host additionally needs [Strawberry Perl](https://strawberryperl.com/) and [LLVM](https://releases.llvm.org/) (`LIBCLANG_PATH`) for native `cargo build` / `cargo llvm-cov` (Frida bindgen).
+
+```bash
+./scripts/coverage.sh                                    # Linux/WSL: integration tests + --features ws-smoke
+powershell.exe -NoProfile -File scripts/coverage.ps1     # native Windows MSVC (same feature flag)
+```
+
+Coverage uses `cargo llvm-cov` on the real `tests/` crate (not cross-compiled smoke release binaries). Scripts enforce `--fail-under-lines 90` per OS. Add new **real** integration scenarios rather than mocks or widening `.llvmcov.toml` beyond `build.rs` if coverage drops.
+
+### Manual smoke
+
+```bash
+guardian -- /usr/bin/curl -sSf --resolve httpbin.org:80:IP http://httpbin.org/get
+guardian -- /usr/bin/sh -c '/usr/bin/curl -sSf --resolve httpbin.org:80:IP http://httpbin.org/get'
+```
+
+Use full executable paths for Frida spawn. Default connect filter hooks ports `80` and `443` only (`cli::default_filter()`).
 
 ## Known limitations
 
@@ -212,7 +248,7 @@ Defaults live in [`config/guardian.toml`](config/guardian.toml) and [`FileSettin
 | — | `--config` | — | — | Extra config file path |
 | — | `-v` | `RUST_LOG` | off | Internal tracing to stderr |
 
-Platform default `filter` when unset: `sa_family == 2 || sa_family == 0` (Unix), `true` (Windows). Not a config key — resolved in `cli::default_filter()`.
+Platform default `filter` when unset: `(sa_family == 2 || sa_family == 0) && (port == 80 || port == 443)` (Unix), `port == 80 || port == 443` (Windows). Not a config key — resolved in `cli::default_filter()`.
 
 ### Internal tuning (config file + env only)
 

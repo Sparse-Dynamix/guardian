@@ -4,8 +4,32 @@
 
 var PORT = {{PORT}};
 
+function globalExport(name) {
+    if (typeof Module.getGlobalExportByName === 'function') {
+        return Module.getGlobalExportByName(name);
+    }
+    if (typeof Module.findExportByName === 'function') {
+        return Module.findExportByName(null, name);
+    }
+    return Module.getExportByName(null, name);
+}
+
 function filter(sa_family, addr, port) {
     return {{FILTER}};
+}
+
+function ensureBlockingSocket(sockfd) {
+    if (Process.platform === 'windows') {
+        return;
+    }
+    var fcntl = new NativeFunction(globalExport('fcntl'), 'int', ['int', 'int', 'int']);
+    var F_GETFL = 3;
+    var F_SETFL = 4;
+    var O_NONBLOCK = 0x800;
+    var flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK);
+    }
 }
 
 function hookConnect(connect_p, send_p, recv_p) {
@@ -37,17 +61,36 @@ function hookConnect(connect_p, send_p, recv_p) {
             if (!this.hook) {
                 return;
             }
+            var sockfd = this.sockfd.toInt32();
+            ensureBlockingSocket(sockfd);
 
-            var connect_request = "CONNECT " + this.addr + ":" + this.port + " HTTP/1.0\n\n";
+            var connect_request = "CONNECT " + this.addr + ":" + this.port + " HTTP/1.1\r\n"
+                + "Host: " + this.addr + ":" + this.port + "\r\n"
+                + "Proxy-Connection: Keep-Alive\r\n"
+                + "\r\n";
             var buf_send = Memory.allocUtf8String(connect_request);
-            socket_send(this.sockfd.toInt32(), buf_send, connect_request.length, 0);
-            var buf_recv = Memory.alloc(512);
-            var recv_return = socket_recv(this.sockfd.toInt32(), buf_recv, 512, 0);
+            socket_send(sockfd, buf_send, connect_request.length, 0);
 
-            while (recv_return == -1) {
+            var buf_recv = Memory.alloc(4096);
+            var total = 0;
+            var attempts = 0;
+            while (total < 4096 && attempts < 200) {
+                var recv_return = socket_recv(sockfd, buf_recv.add(total), 4096 - total, 0);
+                if (recv_return > 0) {
+                    total += recv_return;
+                    var preview = buf_recv.readUtf8String(total);
+                    if (preview && preview.indexOf('\r\n\r\n') >= 0) {
+                        break;
+                    }
+                    continue;
+                }
+                if (recv_return === 0) {
+                    break;
+                }
                 Thread.sleep(0.05);
-                recv_return = socket_recv(this.sockfd.toInt32(), buf_recv, 512, 0);
+                attempts++;
             }
+            Thread.sleep(0.05);
         }
     });
 }
@@ -68,8 +111,9 @@ if (Process.platform === 'windows') {
         );
     }
 } else {
-    var connect_p = Module.getExportByName(null, 'connect');
-    var send_p = Module.getExportByName(null, 'send');
-    var recv_p = Module.getExportByName(null, 'recv');
-    hookConnect(connect_p, send_p, recv_p);
+    hookConnect(
+        globalExport('connect'),
+        globalExport('send'),
+        globalExport('recv')
+    );
 }

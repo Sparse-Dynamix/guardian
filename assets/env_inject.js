@@ -3,13 +3,27 @@
 
 const CA_ENV = {{CA_ENV_JSON}};
 
-function parseEnvBlock(entries) {
+function globalExport(name) {
+    if (typeof Module.getGlobalExportByName === 'function') {
+        return Module.getGlobalExportByName(name);
+    }
+    if (typeof Module.findExportByName === 'function') {
+        return Module.findExportByName(null, name);
+    }
+    return Module.getExportByName(null, name);
+}
+
+function parseEnvBlock(envp) {
     const map = {};
-    if (!entries) {
+    if (envp.isNull()) {
         return map;
     }
-    for (let i = 0; entries[i] !== undefined; i++) {
-        const s = entries[i].readUtf8String();
+    for (let i = 0; ; i++) {
+        const entry = envp.add(i * Process.pointerSize).readPointer();
+        if (entry.isNull()) {
+            break;
+        }
+        const s = entry.readUtf8String();
         if (!s) continue;
         const eq = s.indexOf('=');
         if (eq < 0) continue;
@@ -38,20 +52,23 @@ function mergeEnv(existing, caPairs) {
     return envMapToBlock(map);
 }
 
-function writeEnvBlock(block) {
-    const size = block.reduce((acc, s) => acc + (s ? s.length + 1 : 1), 0);
-    const mem = Memory.alloc(size);
-    let offset = 0;
-    for (const s of block) {
-        if (s === null) {
-            mem.add(offset).writeU8(0);
-            offset += 1;
-        } else {
-            mem.add(offset).writeUtf8String(s);
-            offset += s.length + 1;
+function writeEnvp(block) {
+    const strings = [];
+    for (const line of block) {
+        if (line === null) {
+            break;
         }
+        strings.push(line);
     }
-    return mem;
+    const ptrs = strings.map(function (s) {
+        return Memory.allocUtf8String(s);
+    });
+    const envp = Memory.alloc(Process.pointerSize * (ptrs.length + 1));
+    for (let i = 0; i < ptrs.length; i++) {
+        envp.add(i * Process.pointerSize).writePointer(ptrs[i]);
+    }
+    envp.add(ptrs.length * Process.pointerSize).writePointer(ptr(0));
+    return { envp: envp, ptrs: ptrs };
 }
 
 function hookExecve(name, fn) {
@@ -61,7 +78,9 @@ function hookExecve(name, fn) {
             const envp = args[2];
             if (envp.isNull()) return;
             const merged = mergeEnv(envp, CA_ENV);
-            this.newEnv = writeEnvBlock(merged);
+            const built = writeEnvp(merged);
+            this.newEnv = built.envp;
+            this._envKeepalive = built.ptrs;
             args[2] = this.newEnv;
         }
     });
@@ -76,7 +95,9 @@ function hookPosixSpawn(name, fn) {
             const envp = envpPtr.readPointer();
             if (envp.isNull()) return;
             const merged = mergeEnv(envp, CA_ENV);
-            this.newEnv = writeEnvBlock(merged);
+            const built = writeEnvp(merged);
+            this.newEnv = built.envp;
+            this._envKeepalive = built.ptrs;
             envpPtr.writePointer(this.newEnv);
         }
     });
@@ -136,25 +157,24 @@ function hookCreateProcess(fn) {
         onEnter: function (args) {
             const lpEnvironment = args[6];
             if (lpEnvironment.isNull()) {
-                this.newEnv = mergeWideEnv(ptr(0), CA_ENV);
-                args[6] = this.newEnv;
-            } else {
-                this.newEnv = mergeWideEnv(lpEnvironment, CA_ENV);
-                args[6] = this.newEnv;
+                // NULL inherits the parent environment (already includes CA from spawn).
+                return;
             }
+            this.newEnv = mergeWideEnv(lpEnvironment, CA_ENV);
+            args[6] = this.newEnv;
         }
     });
 }
 
 if (Process.platform === 'linux') {
-    hookExecve('execve', Module.findExportByName(null, 'execve'));
-    hookExecve('execveat', Module.findExportByName(null, 'execveat'));
-    hookExecve('execvp', Module.findExportByName(null, 'execvp'));
-    hookExecve('execvpe', Module.findExportByName(null, 'execvpe'));
+    hookExecve('execve', globalExport('execve'));
+    hookExecve('execveat', globalExport('execveat'));
+    hookExecve('execvp', globalExport('execvp'));
+    hookExecve('execvpe', globalExport('execvpe'));
 } else if (Process.platform === 'darwin') {
-    hookPosixSpawn('posix_spawn', Module.findExportByName(null, 'posix_spawn'));
-    hookPosixSpawn('posix_spawnp', Module.findExportByName(null, 'posix_spawnp'));
-    hookExecve('execve', Module.findExportByName(null, 'execve'));
+    hookPosixSpawn('posix_spawn', globalExport('posix_spawn'));
+    hookPosixSpawn('posix_spawnp', globalExport('posix_spawnp'));
+    hookExecve('execve', globalExport('execve'));
 } else if (Process.platform === 'windows') {
     const k32 = Process.getModuleByName('kernel32.dll');
     hookCreateProcess(k32.getExportByName('CreateProcessW'));

@@ -213,6 +213,27 @@ mod tests {
     }
 
     #[test]
+    fn expand_tilde_resolves_home() {
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(expand_tilde("~").unwrap(), home);
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_path() {
+        assert_eq!(
+            expand_tilde("/etc/hosts").unwrap(),
+            std::path::PathBuf::from("/etc/hosts")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_resolves_home_relative_path() {
+        let home = dirs::home_dir().expect("home dir");
+        let expanded = expand_tilde("~/proxelar-test").unwrap();
+        assert_eq!(expanded, home.join("proxelar-test"));
+    }
+
+    #[test]
     fn bind_from_file_when_cli_omitted() {
         let dir = TempDir::new().unwrap();
         let cfg_path = dir.path().join("guardian.toml");

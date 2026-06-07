@@ -25,7 +25,8 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
         ca_dir: settings.ca_dir.clone(),
         upstream_tls: Default::default(),
         intercept: None,
-        body_capture_limit: Some(settings.body_limit),
+        // Capture more than the JSONL preview cap so `body_truncated` reflects the full body size.
+        body_capture_limit: Some(settings.body_limit.saturating_mul(8).max(512)),
         replay_rx: None,
     };
 

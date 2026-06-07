@@ -51,9 +51,9 @@ pub struct Cli {
 
 pub fn default_filter() -> &'static str {
     if cfg!(target_os = "windows") {
-        "true"
+        "port == 80 || port == 443"
     } else {
-        "sa_family == 2 || sa_family == 0"
+        "(sa_family == 2 || sa_family == 0) && (port == 80 || port == 443)"
     }
 }
 
@@ -64,5 +64,25 @@ pub fn parse_bind_ipv4(bind: &str) -> Result<Ipv4Addr> {
     match addr {
         std::net::IpAddr::V4(v4) => Ok(v4),
         std::net::IpAddr::V6(_) => bail!("IPv6 bind is not supported in v1"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bind_accepts_ipv4() {
+        assert_eq!(parse_bind_ipv4("127.0.0.1").unwrap().to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn parse_bind_rejects_ipv6() {
+        assert!(parse_bind_ipv4("::1").is_err());
+    }
+
+    #[test]
+    fn parse_bind_rejects_garbage() {
+        assert!(parse_bind_ipv4("not-an-ip").is_err());
     }
 }

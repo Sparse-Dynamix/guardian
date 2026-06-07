@@ -12,6 +12,7 @@ pub fn write_event(out: &mut impl Write, event: &ProxyEvent, body_limit: usize) 
     if let Some(v) = value {
         serde_json::to_writer(&mut *out, &v)?;
         out.write_all(b"\n")?;
+        out.flush()?;
     }
     Ok(())
 }
@@ -157,84 +158,4 @@ pub async fn run_sink(
         write_event(&mut stderr, &event, body_limit)?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bytes::Bytes;
-    use http::{Method, StatusCode, Uri, Version};
-    use proxyapi_models::ProxiedResponse;
-    use std::str::FromStr;
-
-    fn sample_request() -> ProxiedRequest {
-        ProxiedRequest::new(
-            Method::GET,
-            Uri::from_str("https://example.com/path").unwrap(),
-            Version::HTTP_11,
-            http::HeaderMap::new(),
-            Bytes::from_static(b"hello"),
-            1_710_000_000_123,
-        )
-    }
-
-    fn sample_response() -> ProxiedResponse {
-        ProxiedResponse::new(
-            StatusCode::OK,
-            Version::HTTP_11,
-            http::HeaderMap::new(),
-            Bytes::from_static(b"world"),
-            1_710_000_000_456,
-        )
-    }
-
-    #[test]
-    fn http_event_serializes() {
-        let event = ProxyEvent::RequestComplete {
-            id: 1,
-            request: Box::new(sample_request()),
-            response: Box::new(sample_response()),
-        };
-        let mut buf = Vec::new();
-        write_event(&mut buf, &event, 256).unwrap();
-        let line = String::from_utf8(buf).unwrap();
-        assert!(line.starts_with('{'));
-        let v: Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(v["type"], "http");
-        assert_eq!(v["request"]["method"], "GET");
-    }
-
-    #[test]
-    fn truncates_body() {
-        let big = vec![b'x'; 512];
-        let req = ProxiedRequest::new(
-            Method::POST,
-            Uri::from_str("http://example.com").unwrap(),
-            Version::HTTP_11,
-            http::HeaderMap::new(),
-            Bytes::from(big),
-            0,
-        );
-        let event = ProxyEvent::RequestComplete {
-            id: 2,
-            request: Box::new(req),
-            response: Box::new(sample_response()),
-        };
-        let mut buf = Vec::new();
-        write_event(&mut buf, &event, 64).unwrap();
-        let v: Value = serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
-        assert_eq!(v["request"]["body_truncated"], true);
-        assert_eq!(v["request"]["body_len"], 512);
-    }
-
-    #[test]
-    fn skips_intercepted() {
-        let event = ProxyEvent::RequestIntercepted {
-            id: 3,
-            request: Box::new(sample_request()),
-        };
-        let mut buf = Vec::new();
-        write_event(&mut buf, &event, 256).unwrap();
-        assert!(buf.is_empty());
-    }
 }

@@ -1,0 +1,2 @@
+[report]
+exclude-files = ["build.rs", "src/bin/ws_smoke.rs"]
