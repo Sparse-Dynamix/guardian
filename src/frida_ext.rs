@@ -7,13 +7,13 @@ use frida_sys::{
     FridaSessionDetachReason, FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED,
 };
 
-#[cfg(windows)]
-use frida_sys::{g_signal_connect_data, g_signal_handler_disconnect};
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 use frida_sys::{
     _frida_g_signal_connect_data as g_signal_connect_data,
     _frida_g_signal_handler_disconnect as g_signal_handler_disconnect,
 };
+#[cfg(not(target_os = "linux"))]
+use frida_sys::{g_signal_connect_data, g_signal_handler_disconnect};
 
 unsafe fn session_ptr(session: &Session) -> *mut frida_sys::_FridaSession {
     let ptr = session as *const Session as *const *mut frida_sys::_FridaSession;

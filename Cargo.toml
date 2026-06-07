@@ -27,11 +27,12 @@ port_check = "0.3"
 http = "1"
 bytes = "1"
 base64 = "0.22"
-tokio-tungstenite = { version = "0.26", optional = true, features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.26", optional = true, features = ["rustls-tls-webpki-roots", "native-tls"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
+native-tls = { version = "0.2", optional = true }
 
 [features]
-ws-smoke = ["dep:tokio-tungstenite", "dep:futures-util"]
+ws-smoke = ["dep:tokio-tungstenite", "dep:futures-util", "dep:native-tls"]
 
 [[bin]]
 name = "guardian-ws-smoke"

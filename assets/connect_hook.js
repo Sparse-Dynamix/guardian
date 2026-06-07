@@ -32,6 +32,54 @@ function ensureBlockingSocket(sockfd) {
     }
 }
 
+// Bytes read past the CONNECT response headers must be replayed on the next recv/read.
+var recvCarry = {};
+
+function storeCarry(sockfd, bytes) {
+    if (!bytes || bytes.length === 0) {
+        return;
+    }
+    var existing = recvCarry[sockfd];
+    if (existing && existing.length > 0) {
+        recvCarry[sockfd] = existing.concat(bytes);
+    } else {
+        recvCarry[sockfd] = bytes;
+    }
+}
+
+function takeCarry(sockfd, maxLen) {
+    var carry = recvCarry[sockfd];
+    if (!carry || carry.length === 0) {
+        return null;
+    }
+    var n = Math.min(carry.length, maxLen);
+    var chunk = carry.slice(0, n);
+    if (n < carry.length) {
+        recvCarry[sockfd] = carry.slice(n);
+    } else {
+        delete recvCarry[sockfd];
+    }
+    return chunk;
+}
+
+function hookRecvCarry(recv_p) {
+    Interceptor.attach(recv_p, {
+        onEnter: function (args) {
+            var fd = args[0].toInt32();
+            var len = args[2].toInt32();
+            if (len <= 0) {
+                return;
+            }
+            var chunk = takeCarry(fd, len);
+            if (!chunk) {
+                return;
+            }
+            args[1].writeByteArray(chunk);
+            this.replace(ptr(chunk.length));
+        }
+    });
+}
+
 function hookConnect(connect_p, send_p, recv_p) {
     var socket_send = new NativeFunction(send_p, 'int', ['int', 'pointer', 'int', 'int']);
     var socket_recv = new NativeFunction(recv_p, 'int', ['int', 'pointer', 'int', 'int']);
@@ -79,7 +127,13 @@ function hookConnect(connect_p, send_p, recv_p) {
                 if (recv_return > 0) {
                     total += recv_return;
                     var preview = buf_recv.readUtf8String(total);
-                    if (preview && preview.indexOf('\r\n\r\n') >= 0) {
+                    var headerEnd = preview ? preview.indexOf('\r\n\r\n') : -1;
+                    if (headerEnd >= 0) {
+                        headerEnd += 4;
+                        if (total > headerEnd) {
+                            var leftover = buf_recv.add(headerEnd).readByteArray(total - headerEnd);
+                            storeCarry(sockfd, Array.from(new Uint8Array(leftover)));
+                        }
                         break;
                     }
                     continue;
@@ -102,6 +156,7 @@ if (Process.platform === 'windows') {
         ws2.getExportByName('send'),
         ws2.getExportByName('recv')
     );
+    hookRecvCarry(ws2.getExportByName('recv'));
     var wsaConnect = ws2.findExportByName('WSAConnect');
     if (wsaConnect) {
         hookConnect(
@@ -111,9 +166,9 @@ if (Process.platform === 'windows') {
         );
     }
 } else {
-    hookConnect(
-        globalExport('connect'),
-        globalExport('send'),
-        globalExport('recv')
-    );
+    var recv_p = globalExport('recv');
+    var read_p = globalExport('read');
+    hookConnect(globalExport('connect'), globalExport('send'), recv_p);
+    hookRecvCarry(recv_p);
+    hookRecvCarry(read_p);
 }

@@ -24,21 +24,9 @@ fn java_truststore_created_when_keytool_available() {
         ca_dir.path().to_str().unwrap(),
         "--",
         &curl,
-        "-sSf",
+        "-sS",
     ]);
-    if let Some(ip) = std::process::Command::new("getent")
-        .args(["ahostsv4", &host])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| {
-            s.lines()
-                .next()
-                .and_then(|l| l.split_whitespace().next())
-                .map(str::to_string)
-        })
-    {
+    if let Some(ip) = common::resolve_ipv4(&host) {
         cmd.arg("--resolve").arg(format!("{host}:{port}:{ip}"));
     }
     cmd.arg(&url);

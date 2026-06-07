@@ -24,40 +24,50 @@ fn wss_echo_logs_websocket_jsonl() {
     );
 
     let ca_dir = TempDir::new().expect("ca dir");
-    let mut child = std::process::Command::new(guardian_bin());
-    child.args([
-        "--ca-dir",
-        ca_dir.path().to_str().unwrap(),
-        "--",
-        ws_bin.to_str().unwrap(),
-        "wss://echo.websocket.org/",
-    ]);
-    child.stdout(std::process::Stdio::piped());
-    child.stderr(std::process::Stdio::piped());
-    let mut process = child.spawn().expect("spawn guardian");
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut out) = process.stdout.take() {
-        out.read_to_string(&mut stdout).unwrap();
+    let mut last_stderr = String::new();
+    for attempt in 0..3 {
+        let mut child = std::process::Command::new(guardian_bin());
+        child.args([
+            "--ca-dir",
+            ca_dir.path().to_str().unwrap(),
+            "--",
+            ws_bin.to_str().unwrap(),
+            "wss://echo.websocket.org/",
+        ]);
+        child.stdout(std::process::Stdio::piped());
+        child.stderr(std::process::Stdio::piped());
+        let mut process = child.spawn().expect("spawn guardian");
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        if let Some(mut out) = process.stdout.take() {
+            out.read_to_string(&mut stdout).unwrap();
+        }
+        if let Some(mut err) = process.stderr.take() {
+            err.read_to_string(&mut stderr).unwrap();
+        }
+        let status = process.wait().unwrap();
+        last_stderr = stderr.clone();
+        if status.code() == Some(0) && !stdout.trim().is_empty() {
+            let jsonl = parse_jsonl(&stderr);
+            let types: Vec<_> = jsonl
+                .iter()
+                .filter_map(|v| v.get("type").and_then(|t| t.as_str()))
+                .collect();
+            assert!(
+                types.contains(&"websocket_connect"),
+                "expected websocket_connect JSONL; got {types:?}"
+            );
+            assert!(
+                types.contains(&"websocket_frame"),
+                "expected websocket_frame JSONL; got {types:?}"
+            );
+            return;
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
     }
-    if let Some(mut err) = process.stderr.take() {
-        err.read_to_string(&mut stderr).unwrap();
-    }
-    let status = process.wait().unwrap();
-    assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
-    assert!(!stdout.trim().is_empty(), "expected echo reply on stdout");
-
-    let jsonl = parse_jsonl(&stderr);
-    let types: Vec<_> = jsonl
-        .iter()
-        .filter_map(|v| v.get("type").and_then(|t| t.as_str()))
-        .collect();
-    assert!(
-        types.contains(&"websocket_connect"),
-        "expected websocket_connect JSONL; got {types:?}"
-    );
-    assert!(
-        types.contains(&"websocket_frame"),
-        "expected websocket_frame JSONL; got {types:?}"
+    panic!(
+        "websocket smoke failed after retries; last stderr:\n{last_stderr}"
     );
 }

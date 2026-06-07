@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Cross-build Linux release artifact for smoke testing.
-# Windows smoke uses native MSVC build via scripts/build-win-smoke.ps1 (powershell.exe).
+# Windows smoke: native MSVC via scripts/build-win-smoke.ps1 (powershell.exe).
+# macOS smoke: native cargo via scripts/build-mac-smoke.sh (Mac host only).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -39,3 +40,4 @@ done
 echo "Smoke artifacts:"
 echo "  target/x86_64-unknown-linux-gnu/release/guardian"
 echo "  Windows: %USERPROFILE%\\guardian-smoke-build\\target\\release\\guardian.exe (build-win-smoke.ps1)"
+echo "  macOS: target/release/guardian (build-mac-smoke.sh on Mac host)"

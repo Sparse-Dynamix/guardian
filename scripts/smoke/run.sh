@@ -58,18 +58,26 @@ run_child() {
     ca_dir="$(make_ca_dir)"
     LAST_OUT="$(mktemp)"
     LAST_ERR="$(mktemp)"
-    inner="${CURL} -sSf"
-    if ((${#RESOLVE_ARGS[@]})); then
-        inner+=" ${RESOLVE_ARGS[*]}"
-    fi
-    inner+=" '${URL}'"
     local -a args=("$GUARDIAN_BIN")
     if [[ "$silent" == "true" ]]; then
         args+=(--silent)
     fi
     args+=(--ca-dir "$ca_dir" --)
-    # shellcheck disable=SC2206
-    args+=(${CHILD_SHELL:-sh -c} "$inner")
+    if [[ -n "${CHILD_WRAPPER:-}" ]]; then
+        args+=("$CHILD_WRAPPER" "$CURL" -sSf)
+        if ((${#RESOLVE_ARGS[@]})); then
+            args+=("${RESOLVE_ARGS[@]}")
+        fi
+        args+=("$URL")
+    else
+        inner="${CURL} -sSf"
+        if ((${#RESOLVE_ARGS[@]})); then
+            inner+=" ${RESOLVE_ARGS[*]}"
+        fi
+        inner+=" '${URL}'"
+        # shellcheck disable=SC2206
+        args+=(${CHILD_SHELL:-sh -c} "$inner")
+    fi
     set +e
     "${args[@]}" >"$LAST_OUT" 2>"$LAST_ERR"
     LAST_EXIT=$?
@@ -91,21 +99,51 @@ run_case() {
     echo "    ok"
 }
 
+# Minimal TOML parse for our fixed schema (no Python; matches run.ps1 on Windows).
 while IFS='|' read -r name command silent expect_exit expect_type; do
+    [[ -z "$name" ]] && continue
     run_case "$name" "$command" "$silent" "$expect_exit" "$expect_type"
-done < <(python3 - <<'PY'
-import tomllib
-from pathlib import Path
-cases = tomllib.loads(Path("scripts/smoke/cases.toml").read_text())["case"]
-for c in cases:
-    print("|".join([
-        c["name"],
-        c["command"],
-        str(c.get("silent", False)).lower(),
-        str(c["expect_exit"]),
-        c.get("expect_jsonl_type", ""),
-    ]))
-PY
+done < <(
+    awk '
+        function flush() {
+            if (name != "") {
+                print name "|" command "|" silent "|" expect_exit "|" expect_type
+            }
+        }
+        /^\[\[case\]\]/ {
+            flush()
+            name=expect_type=""
+            command="direct"
+            silent="false"
+            expect_exit=0
+            next
+        }
+        /^name = "/ {
+            line=$0
+            sub(/^name = "/, "", line)
+            sub(/"$/, "", line)
+            name=line
+        }
+        /^command = "/ {
+            line=$0
+            sub(/^command = "/, "", line)
+            sub(/"$/, "", line)
+            command=line
+        }
+        /^silent = true/ { silent="true" }
+        /^expect_exit = / {
+            if (match($0, /[0-9]+/)) {
+                expect_exit=substr($0, RSTART, RLENGTH)
+            }
+        }
+        /^expect_jsonl_type = "/ {
+            line=$0
+            sub(/^expect_jsonl_type = "/, "", line)
+            sub(/"$/, "", line)
+            expect_type=line
+        }
+        END { flush() }
+    ' "${SCRIPT_DIR}/cases.toml"
 )
 
 echo "All smoke cases passed."

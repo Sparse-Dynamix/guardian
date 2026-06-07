@@ -18,18 +18,7 @@ fn binary_request_body_serializes_in_jsonl() {
     fs::write(&payload_path, &bytes).expect("write payload");
 
     let host = common::url_host("http://httpbin.org/post");
-    let ip = std::process::Command::new("getent")
-        .args(["ahostsv4", &host])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| {
-            s.lines()
-                .next()
-                .and_then(|l| l.split_whitespace().next())
-                .map(str::to_string)
-        });
+    let ip = common::resolve_ipv4(&host);
 
     let curl = common::curl_program();
     let ca_dir = TempDir::new().expect("ca dir");
@@ -40,7 +29,7 @@ fn binary_request_body_serializes_in_jsonl() {
         ca_dir.path().display().to_string(),
         "--".to_string(),
         curl,
-        "-sSf".to_string(),
+        "-sS".to_string(),
         "-X".to_string(),
         "POST".to_string(),
         "--data-binary".to_string(),

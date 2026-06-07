@@ -173,7 +173,7 @@ cargo test --features ws-smoke
 cargo build --release
 ```
 
-Integration tests use `getent ahostsv4` + `curl --resolve` because DNS from hooked processes is unreliable in WSL.
+Integration tests use `getent ahostsv4` (Linux/WSL), `dscacheutil`/`dig` (macOS), plus `curl --resolve` because DNS from hooked processes is unreliable in WSL.
 
 | Layer | What runs |
 |-------|-----------|
@@ -185,30 +185,45 @@ Integration tests use `getent ahostsv4` + `curl --resolve` because DNS from hook
 
 ### Smoke (release artifacts)
 
-Prerequisites: `cargo-zigbuild`, `curl`, Frida devkits via `frida` crate `auto-download`. Windows host: Strawberry Perl + LLVM for native MSVC build (`build-win-smoke.ps1`).
+Prerequisites: `cargo-zigbuild`, `curl`, Frida devkits via `frida` crate `auto-download`. Windows host: Strawberry Perl + LLVM for native MSVC build (`build-win-smoke.ps1`). macOS host: Xcode Command Line Tools (`xcode-select --install`) for Frida bindgen; taskport authorization for SSH/headless (see README macOS permissions). `build-mac-smoke.sh` ad-hoc signs `guardian` with `get-task-allow`, stages ad-hoc signed `guardian-curl` / `guardian-env` / `guardian-sh` (Frida cannot attach to unsigned SIP-protected binaries). macOS `child_spawn` smoke uses `guardian-env curl …` instead of `sh -c` because shell exec replacement breaks Frida re-attach. `coverage-mac.sh` ad-hoc signs instrumented binaries via `rustc-codesign-wrapper.sh`, sets `LLVM_PROFILE_FILE=target/guardian-%p.profraw` (omit `%m` after codesign), and runs tests with `--test-threads=1`. `guardian-ws-smoke` uses native-tls (Secure Transport) on macOS for WSS; Linux/Windows use rustls.
+
+**Platform model:** Linux smoke uses a cross-built ELF from WSL. Windows and macOS smoke/coverage use **native builds on their respective hosts only** — cross-compiled darwin/MSVC artifacts from `build-release.sh` are for release shipping, not smoke or coverage.
 
 ```bash
-./scripts/build-smoke.sh          # zigbuild linux-gnu + stage runtime libs
+./scripts/build-smoke.sh          # zigbuild linux-gnu + stage runtime libs (WSL)
 ./scripts/build-win-smoke.ps1     # native Windows MSVC (from WSL via powershell.exe)
-./scripts/smoke/run.sh            # Linux ELF smoke (WSL)
+./scripts/build-mac-smoke.sh      # native macOS cargo (Mac host only)
+./scripts/smoke/run.sh            # Linux ELF smoke (WSL); SMOKE_PLATFORM=darwin on Mac
 ./scripts/smoke-all.sh            # build-smoke + build-win-smoke + Linux + Windows smoke
 ```
 
 Override binary during dev: `GUARDIAN_BIN=target/debug/guardian ./scripts/smoke/run.sh`.
 
+On macOS:
+
+```bash
+./scripts/build-mac-smoke.sh
+SMOKE_PLATFORM=darwin ./scripts/smoke/run.sh
+```
+
 Windows smoke runs `%USERPROFILE%\guardian-smoke-build\target\release\guardian.exe` (repo synced to NTFS via `sync-win-smoke-build.ps1` before `cargo build --release`).
+
+macOS smoke runs `target/release/guardian` from a native `cargo build --release` in the repo checkout on the Mac.
 
 `SMOKE_URL` overrides the default live endpoint. `SMOKE_SKIP_BUILD=1` skips `build-smoke.sh` in `smoke-all.sh`.
 
 ### Coverage (~90% per OS)
 
-Prerequisites: `cargo install cargo-llvm-cov`, `rustup component add llvm-tools-preview` (WSL and Windows host). `coverage.sh` downloads a portable Temurin JDK 17 into `.cache/jdk-17` so the Java truststore path is exercised.
+Prerequisites: `cargo install cargo-llvm-cov`, `rustup component add llvm-tools-preview` (WSL, Windows host, and Mac host). Coverage scripts download a portable Temurin JDK 17 into `.cache/jdk-17` so the Java truststore path is exercised.
 
 Windows host additionally needs [Strawberry Perl](https://strawberryperl.com/) and [LLVM](https://releases.llvm.org/) (`LIBCLANG_PATH`) for native `cargo build` / `cargo llvm-cov` (Frida bindgen).
+
+macOS host additionally needs Xcode Command Line Tools for Frida bindgen.
 
 ```bash
 ./scripts/coverage.sh                                    # Linux/WSL: integration tests + --features ws-smoke
 powershell.exe -NoProfile -File scripts/coverage.ps1     # native Windows MSVC; auto-syncs to %USERPROFILE%\guardian-smoke-build when run from WSL
+./scripts/coverage-mac.sh                                # native macOS; integration tests + --features ws-smoke
 ```
 
 Coverage uses `cargo llvm-cov` on the real `tests/` crate (not cross-compiled smoke release binaries). Scripts enforce `--fail-under-lines 90` per OS. Add new **real** integration scenarios rather than mocks or widening `.llvmcov.toml` beyond `build.rs` if coverage drops.

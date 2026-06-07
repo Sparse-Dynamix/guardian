@@ -44,6 +44,9 @@ pub fn guardian_bin() -> PathBuf {
 }
 
 pub fn curl_program() -> String {
+    if let Some(curl) = staged_curl_program() {
+        return curl;
+    }
     resolve_executable(if cfg!(windows) { "curl.exe" } else { "curl" })
 }
 
@@ -52,6 +55,58 @@ pub fn cmd_program() -> String {
         std::env::var("COMSPEC").unwrap_or_else(|_| resolve_executable("cmd.exe"))
     } else {
         resolve_executable("sh")
+    }
+}
+
+pub fn child_wrapper_program() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for sub in [
+        "target/debug/guardian-env",
+        "target/release/guardian-env",
+    ] {
+        let path = manifest.join(sub);
+        if path.is_file() {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
+fn staged_mac_binary(name: &str) -> Option<String> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for sub in [format!("target/debug/{name}"), format!("target/release/{name}")] {
+        let path = manifest.join(&sub);
+        if path.is_file() {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
+pub fn staged_printenv_program() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        staged_mac_binary("guardian-printenv")
+    } else {
+        None
+    }
+}
+
+pub fn staged_curl_program() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        staged_mac_binary("guardian-curl")
+    } else {
+        None
+    }
+}
+
+pub fn staged_sh_program() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        staged_mac_binary("guardian-sh")
+    } else {
+        None
     }
 }
 
@@ -68,25 +123,57 @@ pub fn resolve_executable(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-fn resolve_ipv4(host: &str) -> Option<String> {
-    Command::new("getent")
-        .args(["ahostsv4", host])
-        .output()
+fn ipv4_from_command(mut cmd: Command) -> Option<String> {
+    cmd.output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|stdout| {
             stdout
                 .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().next())
-                .map(str::to_string)
+                .find_map(|line| {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        return None;
+                    }
+                    if let Some(rest) = line.strip_prefix("ipv4:") {
+                        let ip = rest.split_whitespace().next()?.trim();
+                        return Some(ip.to_string());
+                    }
+                    if let Some(rest) = line.strip_prefix("ip_address:") {
+                        let ip = rest.split_whitespace().next()?.trim();
+                        return Some(ip.to_string());
+                    }
+                    line.split_whitespace().next().map(str::to_string)
+                })
         })
-        .filter(|ip| !ip.is_empty())
+        .filter(|ip| ip.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+pub fn resolve_ipv4(host: &str) -> Option<String> {
+    {
+        let mut cmd = Command::new("getent");
+        cmd.args(["ahostsv4", host]);
+        if let Some(ip) = ipv4_from_command(cmd) {
+            return Some(ip);
+        }
+    }
+    {
+        let mut cmd = Command::new("dscacheutil");
+        cmd.args(["-q", "host", "-a", "name", host]);
+        if let Some(ip) = ipv4_from_command(cmd) {
+            return Some(ip);
+        }
+    }
+    {
+        let mut cmd = Command::new("dig");
+        cmd.args(["+short", "A", host]);
+        ipv4_from_command(cmd)
+    }
 }
 
 fn curl_args(url: &str) -> Vec<String> {
-    let mut args = vec![curl_program(), "-sSf".to_string()];
+    let mut args = vec![curl_program(), "-sS".to_string()];
     let host = url_host(url);
     if let Some(ip) = resolve_ipv4(&host) {
         let port = if url.starts_with("https://") { "443" } else { "80" };
@@ -109,6 +196,8 @@ pub fn run_guardian_echo_env_var(
             "/c".to_string(),
             format!("echo %{}%", var),
         ]
+    } else if let Some(printenv) = staged_printenv_program() {
+        vec![printenv, var.to_string()]
     } else {
         let sh = resolve_executable("sh");
         vec![
@@ -163,6 +252,7 @@ pub fn run_guardian_direct_https(silent: bool) -> std::io::Result<GuardianRun> {
     })
 }
 
+#[derive(Clone)]
 pub struct GuardianOptions {
     pub silent: bool,
     pub verbose: bool,
@@ -186,7 +276,11 @@ impl Default for GuardianOptions {
 }
 
 pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<GuardianRun> {
-    let url = opts.url.unwrap_or_else(smoke_url);
+    run_guardian_http_with_retry(|| run_guardian_with_options_once(&opts))
+}
+
+fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
+    let url = opts.url.clone().unwrap_or_else(smoke_url);
     let mut args = Vec::new();
     if opts.silent {
         args.push("--silent".to_string());
@@ -220,6 +314,10 @@ pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<Guard
 }
 
 pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
+    run_guardian_http_with_retry(|| run_guardian_child_spawn_once(silent))
+}
+
+fn run_guardian_child_spawn_once(silent: bool) -> std::io::Result<GuardianRun> {
     let url = smoke_url();
     let mut args = Vec::new();
     if silent {
@@ -237,7 +335,16 @@ pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
         args.push(cmd_program());
         args.push("/c".to_string());
         args.push(curl_program());
-        args.push("-sSf".to_string());
+        args.push("-sS".to_string());
+        if let Some(ip) = resolve_ipv4(&host) {
+            args.push("--resolve".to_string());
+            args.push(format!("{host}:{port}:{ip}"));
+        }
+        args.push(url);
+    } else if let Some(wrapper) = child_wrapper_program() {
+        args.push(wrapper);
+        args.push(curl_program());
+        args.push("-sS".to_string());
         if let Some(ip) = resolve_ipv4(&host) {
             args.push("--resolve".to_string());
             args.push(format!("{host}:{port}:{ip}"));
@@ -248,7 +355,7 @@ pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
             .map(|ip| format!("--resolve {host}:{port}:{ip}"))
             .unwrap_or_default();
         let sh = resolve_executable("sh");
-        let inner = format!("{} -sSf {} '{}'", curl_program(), resolve, url);
+        let inner = format!("{} -sS {} '{}'", curl_program(), resolve, url);
         args.push(sh);
         args.push("-c".to_string());
         args.push(inner);
@@ -300,6 +407,30 @@ fn run_guardian_with_args(
         jsonl,
         _ca_dir: ca_dir,
     })
+}
+
+const GUARDIAN_HTTP_RETRIES: usize = 3;
+
+fn run_guardian_http_with_retry<F>(mut run_once: F) -> std::io::Result<GuardianRun>
+where
+    F: FnMut() -> std::io::Result<GuardianRun>,
+{
+    let mut last = None;
+    for attempt in 0..GUARDIAN_HTTP_RETRIES {
+        let run = run_once()?;
+        let has_http = run
+            .jsonl
+            .iter()
+            .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("http"));
+        if has_http {
+            return Ok(run);
+        }
+        last = Some(run);
+        if attempt + 1 < GUARDIAN_HTTP_RETRIES {
+            std::thread::sleep(Duration::from_millis(2000));
+        }
+    }
+    Ok(last.expect("guardian run"))
 }
 
 pub fn parse_jsonl(stderr: &str) -> Vec<Value> {
@@ -367,15 +498,30 @@ pub fn require_network() -> bool {
     }
     let curl = curl_program();
     let probe_url = smoke_url();
-    let mut probe_args = curl_args(&probe_url);
-    probe_args.insert(1, "--connect-timeout".to_string());
-    probe_args.insert(2, "5".to_string());
-    let probe = Command::new(&curl)
-        .args(&probe_args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    probe.map(|s| s.success()).unwrap_or(false)
+    let null_out = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    for attempt in 0..3 {
+        let probe = Command::new(&curl)
+            .args([
+                "-sS",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "20",
+                "-o",
+                null_out,
+                &probe_url,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if probe.map(|s| s.success()).unwrap_or(false) {
+            return true;
+        }
+        if attempt < 2 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    false
 }
 
 #[allow(dead_code)]
