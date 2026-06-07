@@ -38,7 +38,7 @@ flowchart TB
     Forward --> TLS --> Events
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect`; redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Platform-default filter when unset: ports `80` and `443` only (see `cli::default_filter()`).
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (UDP passes through unchanged, including DNS); redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Platform-default filter when unset: all IPv4 TCP except a built-in non-HTTP port denylist (HTTP Toolkit-style; see `cli::default_filter()` and `IGNORED_NON_HTTP_PORTS`).
 
 **Layer 2** — `ProxyMode::Forward`, `intercept: None`, TLS MITM via Proxelar CA in `ca_dir`.
 
@@ -64,7 +64,7 @@ main (tokio)
  ├─ init tracing (prefixed; off unless -v / RUST_LOG)
  ├─ CaTrust::ensure_artifacts + Ssl::load_or_generate
  ├─ spawn_blocking:
- │    ├─ frida.spawn(env=ca_vars) → root_pid (suspended)
+ │    ├─ frida.spawn(envp=parent+ca) → root_pid (suspended)
  │    ├─ resolve_listen_port → port
  │    ├─ await proxy ready (main starts proxy, signals injector)
  │    ├─ instrument(root): child_gating, connect_hook + env_inject, resume
@@ -159,6 +159,14 @@ npm install
 cargo build --release
 ```
 
+`proxyapi` is patched via `patches/proxyapi+0.4.5.patch` ([cargo-patch-crate](https://github.com/mokeyish/cargo-patch-crate) format). The patched tree lands in `target/patch/` (gitignored). Cargo resolves `[patch.crates-io]` before `build.rs`, so run the bootstrap once before a plain `cargo build`:
+
+```bash
+cargo run --quiet --manifest-path tools/patch-proxyapi/Cargo.toml
+```
+
+npm/zx build scripts call that automatically. `build.rs` reapplies when `patches/` changes (next build picks up the refreshed `proxyapi`).
+
 Binary: `target/release/guardian`. Ship `libfrida-core` beside the binary when dynamically linked (`build.rs` sets `rpath $ORIGIN` on Linux, `@loader_path` on macOS).
 
 | OS | Library | Load path |
@@ -178,13 +186,14 @@ cargo test --features ws-smoke
 cargo build --release
 ```
 
-Integration tests use `getent ahostsv4` (Linux/WSL), `dscacheutil`/`dig` (macOS), plus `curl --resolve` because DNS from hooked processes is unreliable in WSL.
+Integration tests use live DNS (`tests/dns_resolution.rs`: `getent` / `curl` under guardian with no manual `--resolve`).
 
 | Layer | What runs |
 |-------|-----------|
 | `tests/https_*.rs`, `silent.rs`, `verbose.rs`, `fixed_port.rs`, `body_limit.rs`, `config_file.rs`, `binary_post.rs` | HTTP MITM + JSONL assertions |
 | `tests/env_*.rs`, `java_truststore.rs` | Real CA/env injection (portable JDK under `.cache/jdk-17` for PKCS12 path) |
 | `tests/websocket.rs` + `guardian-ws-smoke` bin | Live `wss://echo.websocket.org/` WebSocket JSONL |
+| `tests/dns_resolution.rs`, `tests/non_http_passthrough.rs`, `tests/custom_http_port.rs` | Live DNS resolution + denylist connect filter |
 | `tests/invalid_bind.rs`, `spawn_failure.rs` | CLI / spawn error paths |
 | `src/port.rs`, `src/config.rs`, `src/cli.rs`, `src/injector.rs`, `src/main.rs` | Small unit tests for real parsing, hooks, and OS primitives |
 
@@ -224,11 +233,11 @@ Coverage uses `cargo llvm-cov` on the real `tests/` crate with `--fail-under-lin
 ### Manual smoke
 
 ```bash
-guardian -- /usr/bin/curl -sSf --resolve httpbin.org:80:IP http://httpbin.org/get
-guardian -- /usr/bin/sh -c '/usr/bin/curl -sSf --resolve httpbin.org:80:IP http://httpbin.org/get'
+guardian -- curl -sSf https://httpbin.org/get
+guardian -- sh -c 'curl -sSf https://httpbin.org/get'
 ```
 
-Use full executable paths for Frida spawn. Default connect filter hooks ports `80` and `443` only (`cli::default_filter()`).
+Bare command names are resolved via `PATH` before Frida spawn; absolute and relative paths still work. Default connect filter intercepts all IPv4 TCP except common non-HTTP ports (`cli::IGNORED_NON_HTTP_PORTS` / `cli::default_filter()`).
 
 ## Known limitations
 
@@ -257,7 +266,7 @@ Defaults live in [`config/guardian.toml`](config/guardian.toml) and [`FileSettin
 | — | `--config` | — | — | Extra config file path |
 | — | `-v` | `RUST_LOG` | off | Internal tracing to stderr |
 
-Platform default `filter` when unset: `(sa_family == 2 || sa_family == 0) && (port == 80 || port == 443)` (Unix), `port == 80 || port == 443` (Windows). Not a config key — resolved in `cli::default_filter()`.
+Platform default `filter` when unset: IPv4 TCP except `IGNORED_NON_HTTP_PORTS` (SSH 22, DNS 53, Postgres 5432, etc.). Proxelar sniffs redirected traffic and only MITM-logs HTTP/TLS/WebSocket; unknown protocols are tunneled without JSONL. Override with `--filter` / `GUARDIAN_FILTER`. Not a config file key — built in `cli::default_filter()`.
 
 ### Internal tuning (config file + env only)
 

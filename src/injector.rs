@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::net::IpAddr;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use frida::{DeviceManager, DeviceType, Frida, ScriptOption, SpawnOptions, SpawnStdio};
@@ -41,9 +43,11 @@ pub fn build_hook_bundle(
     ca_trust: &CaTrust,
 ) -> Result<HookBundle> {
     let octets = bind_ip.octets();
+    let bind_host = bind_ip.to_string();
     let connect_hook = CONNECT_HOOK_TEMPLATE
         .replace("{{PORT}}", &port.to_string())
         .replace("{{FILTER}}", filter)
+        .replace("{{BIND_HOST}}", &bind_host)
         .replace("{{BIND_HOST_0}}", &octets[0].to_string())
         .replace("{{BIND_HOST_1}}", &octets[1].to_string())
         .replace("{{BIND_HOST_2}}", &octets[2].to_string())
@@ -77,17 +81,14 @@ fn instrument<'a>(
         }
     });
 
-    let mut connect_opt = ScriptOption::new();
-    let connect_script = session
-        .create_script(&hook_bundle.connect_hook, &mut connect_opt)
+    let mut network_opt = ScriptOption::new();
+    let network_script = session
+        .create_script(&hook_bundle.connect_hook, &mut network_opt)
         .context("failed to create connect hook script")?;
-    connect_script
+    network_script
         .load()
         .context("failed to load connect hook script")?;
-
-    // Frida unloads scripts when the Rust Script handle drops; leak the handle so the hook
-    // stays active for the lifetime of the session.
-    std::mem::forget(connect_script);
+    std::mem::forget(network_script);
 
     let mut env_opt = ScriptOption::new();
     let env_script = session
@@ -126,7 +127,7 @@ pub fn run_injection_coordinated(
     interrupt_rx: Receiver<()>,
 ) -> Result<SpawnOutcome> {
     let parent_env: Vec<(String, String)> = std::env::vars().collect();
-    let spawn_env = ca_trust.env_for_child(&parent_env);
+    let spawn_env = ca_trust.spawn_env_merged(&parent_env);
 
     let frida = unsafe { Frida::obtain() };
     let device_manager = DeviceManager::obtain(&frida);
@@ -160,7 +161,13 @@ pub fn run_injection_coordinated(
                 .chain(settings.args.iter().map(String::as_str)),
         )
         .stdio(SpawnStdio::Inherit)
-        .env(spawn_env);
+        .envp(spawn_env);
+
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(cwd_str) = cwd.to_str() {
+            spawn_options = spawn_options.cwd(CString::new(cwd_str).context("cwd contains NUL")?);
+        }
+    }
 
     let root_pid = device
         .spawn(&settings.program, &mut spawn_options)
@@ -178,11 +185,17 @@ pub fn run_injection_coordinated(
         .send(port)
         .map_err(|_| anyhow::anyhow!("proxy coordinator dropped before port allocation"))?;
 
-    proxy_ready_rx
-        .recv()
-        .map_err(|_| anyhow::anyhow!("proxy coordinator dropped before ready"))?;
+    if recv_or_interrupted(&proxy_ready_rx, &interrupt_rx, 100)?.is_none() {
+        terminate_pid(root_pid);
+        return Ok(SpawnOutcome { exit_code: 130 });
+    }
 
-    let hook_bundle = build_hook_bundle(port, &settings.filter, settings.bind, ca_trust)?;
+    let hook_bundle = build_hook_bundle(
+        port,
+        &settings.filter,
+        settings.bind,
+        ca_trust,
+    )?;
     let mut sessions: HashMap<u32, TrackedSession<'_>> = HashMap::new();
 
     instrument(
@@ -208,6 +221,58 @@ pub fn run_injection_coordinated(
     Ok(SpawnOutcome { exit_code })
 }
 
+fn recv_or_interrupted<T>(
+    data_rx: &Receiver<T>,
+    interrupt_rx: &Receiver<()>,
+    poll_ms: u64,
+) -> Result<Option<T>> {
+    loop {
+        if interrupt_rx.try_recv().is_ok() {
+            return Ok(None);
+        }
+        match data_rx.recv_timeout(Duration::from_millis(poll_ms)) {
+            Ok(value) => return Ok(Some(value)),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("coordinator channel closed unexpectedly");
+            }
+        }
+    }
+}
+
+fn terminate_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGINT);
+        std::thread::sleep(Duration::from_millis(100));
+        if libc::kill(pid as i32, 0) != 0 {
+            return;
+        }
+        libc::kill(pid as i32, libc::SIGTERM);
+        std::thread::sleep(Duration::from_millis(100));
+        if libc::kill(pid as i32, 0) != 0 {
+            return;
+        }
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if !handle.is_null() {
+            unsafe {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
 fn wait_for_root<'a>(
     root_pid: u32,
     event_rx: &std::sync::mpsc::Receiver<ProcessEvent>,
@@ -219,11 +284,6 @@ fn wait_for_root<'a>(
     process_poll_interval_ms: u64,
 ) -> Result<i32> {
     loop {
-        if interrupt_rx.try_recv().is_ok() {
-            sessions.clear();
-            return Ok(130);
-        }
-
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 ProcessEvent::ChildRemoved(pid) => {
@@ -244,9 +304,15 @@ fn wait_for_root<'a>(
         match try_wait_pid(root_pid) {
             WaitStatus::Exited(code) => return Ok(code),
             WaitStatus::StillRunning => {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    process_poll_interval_ms,
-                ));
+                match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms))
+                {
+                    Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                        terminate_pid(root_pid);
+                        sessions.clear();
+                        return Ok(130);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
             }
             WaitStatus::Error(e) => {
                 anyhow::bail!("wait failed for {root_pid}: {e}");
@@ -264,8 +330,6 @@ enum WaitStatus {
 fn try_wait_pid(pid: u32) -> WaitStatus {
     #[cfg(unix)]
     {
-        // Frida-spawned children are not descendants of guardian; waitpid(2) returns
-        // ECHILD. Poll with kill(pid, 0) like the Windows OpenProcess path.
         let ret = unsafe { libc::kill(pid as i32, 0) };
         if ret == 0 {
             return WaitStatus::StillRunning;
@@ -290,7 +354,6 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             let err = std::io::Error::last_os_error();
-            // Root process may have exited and PID is no longer openable (Frida spawn).
             if matches!(err.raw_os_error(), Some(87) | Some(5)) {
                 return WaitStatus::Exited(0);
             }
@@ -319,9 +382,8 @@ mod tests {
 
     use super::build_hook_bundle;
 
-    #[test]
-    fn hook_bundle_substitutes_port_and_bind() {
-        let settings = Settings {
+    fn test_settings() -> Settings {
+        Settings {
             bind: Ipv4Addr::LOCALHOST,
             port: None,
             body_limit: 256,
@@ -343,11 +405,30 @@ mod tests {
             tracing_default_level: "guardian=debug".to_string(),
             program: "true".to_string(),
             args: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn hook_bundle_uses_default_denylist_filter() {
+        use crate::cli::default_filter;
+
+        let settings = test_settings();
+        let ca = CaTrust::from_settings(&settings);
+        let filter = default_filter();
+        let bundle = build_hook_bundle(9999, &filter, Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains("Socket.type"));
+        assert!(bundle.connect_hook.contains("9999"));
+        assert!(bundle.connect_hook.contains("includes(port)"));
+    }
+
+    #[test]
+    fn hook_bundle_substitutes_port_and_bind() {
+        let settings = test_settings();
         let ca = CaTrust::from_settings(&settings);
         let bundle = build_hook_bundle(12345, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
         assert!(bundle.connect_hook.contains("12345"));
         assert!(bundle.connect_hook.contains("true"));
+        assert!(bundle.connect_hook.contains("127.0.0.1"));
         assert!(bundle.env_inject.contains("SSL_CERT_FILE"));
     }
 }

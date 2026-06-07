@@ -15,8 +15,6 @@ fn java_truststore_created_when_keytool_available() {
     let ca_dir = tempfile::TempDir::new().expect("ca dir");
     let url = common::smoke_url();
     let curl = common::curl_program();
-    let host = common::url_host(&url);
-    let port = if url.starts_with("https://") { "443" } else { "80" };
     let mut cmd = std::process::Command::new(common::guardian_bin());
     cmd.env("JAVA_HOME", &java_home);
     cmd.args([
@@ -25,11 +23,8 @@ fn java_truststore_created_when_keytool_available() {
         "--",
         &curl,
         "-sS",
+        &url,
     ]);
-    if let Some(ip) = common::resolve_ipv4(&host) {
-        cmd.arg("--resolve").arg(format!("{host}:{port}:{ip}"));
-    }
-    cmd.arg(&url);
     let status = cmd.status().expect("guardian status");
     assert!(status.success(), "guardian run failed");
 

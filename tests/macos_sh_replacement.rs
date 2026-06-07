@@ -1,8 +1,7 @@
 mod common;
 
 use common::{
-    require_network, smoke_url, staged_curl_program, staged_sh_program, url_host,
-    resolve_ipv4,
+    require_network, smoke_url, staged_curl_program, staged_sh_program,
 };
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -23,12 +22,7 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
     };
 
     let url = smoke_url();
-    let host = url_host(&url);
-    let port = if url.starts_with("https://") { "443" } else { "80" };
-    let resolve = resolve_ipv4(&host)
-        .map(|ip| format!("--resolve {host}:{port}:{ip}"))
-        .unwrap_or_default();
-    let inner = format!("{curl} -sSf {resolve} '{url}'");
+    let inner = format!("{curl} -sSf '{url}'");
 
     let ca_dir = TempDir::new().expect("ca dir");
     let mut child = Command::new(common::guardian_bin());

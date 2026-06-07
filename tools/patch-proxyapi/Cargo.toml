@@ -1,0 +1,17 @@
+[package]
+name = "patch-proxyapi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "patch-proxyapi"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+flate2 = "1"
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
+tar = "0.4"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+walkdir = "2"

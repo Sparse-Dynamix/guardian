@@ -4,9 +4,17 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::Parser;
 
+/// Well-known non-HTTP TCP ports left untouched by the default connect hook.
+/// HTTP Toolkit-style denylist; override with `--filter` for app-specific ports.
+pub const IGNORED_NON_HTTP_PORTS: &[u16] = &[
+    21, 22, 23, 25, 53, 853, 5353, 110, 143, 465, 587, 993, 995, 3306, 5432, 6379, 27017, 3389,
+    389, 636, 5060,
+];
+
 #[derive(Debug, Parser)]
 #[command(
     name = "guardian",
+    version = env!("CARGO_PKG_VERSION"),
     about = "MITM network wrapper using Frida + Proxelar",
     trailing_var_arg = true,
     allow_hyphen_values = true
@@ -49,11 +57,16 @@ pub struct Cli {
     pub program: Vec<String>,
 }
 
-pub fn default_filter() -> &'static str {
+pub fn default_filter() -> String {
+    let ports = IGNORED_NON_HTTP_PORTS
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     if cfg!(target_os = "windows") {
-        "port == 80 || port == 443"
+        format!("![{ports}].includes(port)")
     } else {
-        "(sa_family == 2 || sa_family == 0) && (port == 80 || port == 443)"
+        format!("(sa_family == 2 || sa_family == 0) && ![{ports}].includes(port)")
     }
 }
 
@@ -84,5 +97,19 @@ mod tests {
     #[test]
     fn parse_bind_rejects_garbage() {
         assert!(parse_bind_ipv4("not-an-ip").is_err());
+    }
+
+    #[test]
+    fn default_filter_excludes_ssh_and_includes_http_alt() {
+        let filter = default_filter();
+        assert!(filter.contains("22"));
+        assert!(filter.contains("443") || !filter.contains("port == 443"));
+    }
+
+    #[test]
+    fn version_flag_does_not_require_child() {
+        use clap::error::ErrorKind;
+        let err = Cli::try_parse_from(["guardian", "--version"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::DisplayVersion);
     }
 }

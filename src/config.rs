@@ -127,6 +127,35 @@ pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
         .context("failed to deserialize configuration")
 }
 
+fn looks_like_path(program: &str) -> bool {
+    program.contains('/') || program.contains('\\')
+}
+
+pub fn resolve_program(program: &str) -> Result<PathBuf> {
+    let path = Path::new(program);
+
+    if path.is_absolute() {
+        if path.exists() {
+            return Ok(path.to_path_buf());
+        }
+        anyhow::bail!("program '{program}' not found");
+    }
+
+    if looks_like_path(program) {
+        let candidate = std::env::current_dir()
+            .context("failed to get current directory")?
+            .join(path);
+        if candidate.exists() {
+            return candidate
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize '{program}'"));
+        }
+        anyhow::bail!("program '{program}' not found");
+    }
+
+    which::which(program).with_context(|| format!("program '{program}' not found in PATH"))
+}
+
 pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     let file = load_file_settings(cli.config.as_deref())?;
 
@@ -136,19 +165,22 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     let filter = cli
         .filter
         .clone()
-        .or(file.filter)
-        .unwrap_or_else(|| default_filter().to_string());
+        .or(file.filter.clone())
+        .unwrap_or_else(default_filter);
     let ca_dir = match &cli.ca_dir {
         Some(dir) => dir.clone(),
         None => expand_tilde(&file.ca_dir)?,
     };
     let silent = cli.silent || file.silent;
 
-    let program = cli
+    let program_raw = cli
         .program
         .first()
         .cloned()
         .context("program is required after --")?;
+    let program = resolve_program(&program_raw)?
+        .to_string_lossy()
+        .into_owned();
     let args = cli.program.iter().skip(1).cloned().collect();
 
     Ok(Settings {
@@ -208,8 +240,34 @@ mod tests {
         let settings = resolve_settings(&cli).unwrap();
         assert_eq!(settings.body_limit, 512);
         assert_eq!(settings.port, Some(9000));
-        assert_eq!(settings.program, "echo");
+        assert_eq!(
+            settings.program,
+            which::which("echo").unwrap().to_string_lossy()
+        );
         assert_eq!(settings.args, vec!["hi".to_string()]);
+    }
+
+    #[test]
+    fn resolve_program_bare_name() {
+        let resolved = resolve_program("echo").unwrap();
+        assert!(resolved.is_absolute());
+        assert!(resolved.exists());
+    }
+
+    #[test]
+    fn resolve_program_absolute_path() {
+        let echo = which::which("echo").unwrap();
+        let resolved = resolve_program(echo.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, echo);
+    }
+
+    #[test]
+    fn resolve_program_unknown_bare_name() {
+        let err = resolve_program("guardian-nonexistent-program-xyz").unwrap_err();
+        assert!(
+            err.to_string().contains("not found in PATH"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -231,6 +289,15 @@ mod tests {
         let home = dirs::home_dir().expect("home dir");
         let expanded = expand_tilde("~/proxelar-test").unwrap();
         assert_eq!(expanded, home.join("proxelar-test"));
+    }
+
+    #[test]
+    fn default_filter_from_settings_when_unset() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["guardian", "--", "true"]).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.filter.contains("includes(port)"));
+        assert!(settings.filter.contains("22"));
     }
 
     #[test]

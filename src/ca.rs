@@ -81,6 +81,19 @@ impl CaTrust {
     }
 
     pub fn env_for_child(&self, parent_env: &[(String, String)]) -> Vec<(String, String)> {
+        self.ca_env_overrides(parent_env)
+    }
+
+    /// Full environment for Frida spawn: parent vars plus CA trust overrides.
+    pub fn spawn_env_merged(&self, parent_env: &[(String, String)]) -> Vec<(String, String)> {
+        let mut map: HashMap<String, String> = parent_env.iter().cloned().collect();
+        for (key, value) in self.ca_env_overrides(parent_env) {
+            map.insert(key, value);
+        }
+        map.into_iter().collect()
+    }
+
+    fn ca_env_overrides(&self, parent_env: &[(String, String)]) -> Vec<(String, String)> {
         let parent: HashMap<_, _> = parent_env.iter().cloned().collect();
         let mut out = Vec::new();
         let bundle = self.ca_bundle.display().to_string();
@@ -286,6 +299,20 @@ mod tests {
     use super::CaTrust;
 
     #[test]
+    fn env_for_child_skips_existing_pem_vars() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: None,
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let env = trust.env_for_child(&[("SSL_CERT_FILE".into(), "/existing.pem".into())]);
+        assert!(!env.iter().any(|(k, _)| k == "SSL_CERT_FILE"));
+    }
+
+    #[test]
     fn env_for_child_merges_node_options_when_flag_missing() {
         let trust = CaTrust {
             caroot: PathBuf::from("/tmp/guardian-ca"),
@@ -299,5 +326,26 @@ mod tests {
         assert!(env.iter().any(|(k, v)| {
             k == "NODE_OPTIONS" && v.contains("--use-openssl-ca") && v.contains("--max-old-space-size=64")
         }));
+    }
+
+    #[test]
+    fn spawn_env_merged_includes_parent_and_ca() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: None,
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let parent = vec![
+            ("HOME".into(), "/home/test".into()),
+            ("PATH".into(), "/usr/bin".into()),
+        ];
+        let merged = trust.spawn_env_merged(&parent);
+        let map: std::collections::HashMap<_, _> = merged.into_iter().collect();
+        assert_eq!(map.get("HOME").map(String::as_str), Some("/home/test"));
+        assert_eq!(map.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert!(map.contains_key("SSL_CERT_FILE"));
     }
 }

@@ -6,12 +6,14 @@ mod injector;
 mod jsonl;
 mod port;
 mod proxy;
+mod signals;
 
 use std::io::Write;
 use std::net::IpAddr;
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -22,6 +24,9 @@ use tracing_subscriber::EnvFilter;
 use crate::ca::CaTrust;
 use crate::cli::Cli;
 use crate::config::{resolve_settings, Settings};
+use crate::injector::SpawnOutcome;
+
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 struct PrefixedStderr {
     inner: std::io::Stderr,
@@ -161,20 +166,23 @@ async fn run(settings: Settings) -> Result<i32> {
         result
     });
 
-    let ctrl_c = cancel.clone();
     let proxy_cancel = proxy_handle.cancel.clone();
-    let ctrl_c_task = tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for Ctrl+C");
-        let _ = interrupt_tx.send(());
-        ctrl_c.cancel();
-        proxy_cancel.cancel();
-    });
+    let mut injection = injection;
 
-    let outcome = injection.await.context("injection join failed")??;
+    let outcome = tokio::select! {
+        join = &mut injection => join.context("injection join failed")??,
+        res = signals::shutdown_signal() => {
+            res?;
+            let _ = interrupt_tx.send(());
+            proxy_cancel.cancel();
+            cancel.cancel();
+            match tokio::time::timeout(SHUTDOWN_GRACE, &mut injection).await {
+                Ok(Ok(Ok(outcome))) => outcome,
+                _ => SpawnOutcome { exit_code: 130 },
+            }
+        }
+    };
 
-    ctrl_c_task.abort();
     // Proxelar may emit RequestComplete from spawned tasks after the child exits.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     proxy_handle.cancel.cancel();

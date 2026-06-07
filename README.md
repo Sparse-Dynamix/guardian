@@ -1,6 +1,6 @@
 # guardian
 
-Run any command under transparent network interception. Guardian wraps a program with Frida hooking and a local MITM proxy, then streams captured HTTP, HTTPS, WebSocket, and secure WebSocket traffic as JSON on stderr — while the program’s own output on stdout stays clean for piping.
+Run any command under transparent network interception. Guardian wraps a program with Frida hooking and a local Proxelar MITM proxy, then streams captured HTTP, HTTPS, WebSocket, and secure WebSocket traffic as JSON on stderr — while the program's own output on stdout stays clean for piping.
 
 ```bash
 guardian -- curl https://httpbin.org/get
@@ -11,7 +11,7 @@ guardian -- sh -c 'curl https://httpbin.org/get'
 
 Download a release binary when available, or build from source — see [AGENTS.md](AGENTS.md#build).
 
-When using a dynamically linked build, ship the Frida runtime library beside the `guardian` binary (see AGENTS.md).
+When using a dynamically linked build, ship the Frida runtime library beside the `guardian` binary [AGENTS.md](AGENTS.md).
 
 ## Usage
 

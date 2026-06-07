@@ -10,7 +10,34 @@ function cargoExecutable(): string {
   return "cargo";
 }
 
+const PATCH_PROXYAPI_MANIFEST = path.join(
+  REPO_ROOT,
+  "tools",
+  "patch-proxyapi",
+  "Cargo.toml",
+);
+
+export function applyCratePatches(): void {
+  cdRepo();
+  const cargo = cargoExecutable();
+  const result = spawnSync(
+    cargo,
+    ["run", "--quiet", "--manifest-path", PATCH_PROXYAPI_MANIFEST],
+    {
+      stdio: "inherit",
+      env: process.env,
+      cwd: REPO_ROOT,
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `patch-proxyapi failed (exit ${result.status ?? 1})`,
+    );
+  }
+}
+
 export function runCargo(args: string[]): void {
+  applyCratePatches();
   cdRepo();
   const cargo = cargoExecutable();
   const result = spawnSync(cargo, args, {

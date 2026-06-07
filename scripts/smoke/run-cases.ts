@@ -4,7 +4,6 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { smokeCases } from "./cases.ts";
 import type { SmokeCase } from "./cases.ts";
-import { curlResolveArgs } from "./dns.ts";
 import {
   assertExit,
   assertStderrJsonlType,
@@ -19,10 +18,6 @@ const DEFAULT_SMOKE_URL = "http://httpbin.org/get";
 
 function smokeUrl(): string {
   return process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
-}
-
-function urlHost(url: string): string {
-  return url.replace(/^https?:\/\//, "").split("/")[0] ?? "httpbin.org";
 }
 
 function makeCaDir(): string {
@@ -56,32 +51,16 @@ function runGuardian(guardianArgs: string[]): RunResult {
   };
 }
 
-function runDirect(
-  silent: boolean,
-  url: string,
-  resolveArgs: string[],
-): RunResult {
+function runDirect(silent: boolean, url: string): RunResult {
   const config = platformConfig();
   const caDir = makeCaDir();
   const guardianArgs: string[] = [];
   if (silent) guardianArgs.push("--silent");
-  guardianArgs.push(
-    "--ca-dir",
-    caDir,
-    "--",
-    config.curl,
-    "-sSf",
-    ...resolveArgs,
-    url,
-  );
+  guardianArgs.push("--ca-dir", caDir, "--", config.curl, "-sSf", url);
   return runGuardian(guardianArgs);
 }
 
-function runChild(
-  silent: boolean,
-  url: string,
-  resolveArgs: string[],
-): RunResult {
+function runChild(silent: boolean, url: string): RunResult {
   const config = platformConfig();
   const caDir = makeCaDir();
   const guardianArgs: string[] = [];
@@ -89,19 +68,12 @@ function runChild(
   guardianArgs.push("--ca-dir", caDir, "--");
 
   if (config.childWrapper) {
-    guardianArgs.push(
-      config.childWrapper,
-      config.curl,
-      "-sSf",
-      ...resolveArgs,
-      url,
-    );
+    guardianArgs.push(config.childWrapper, config.curl, "-sSf", url);
   } else if (hostPlatform() === "win") {
     const cmd = process.env.COMSPEC ?? resolveExecutable("cmd.exe");
-    guardianArgs.push(cmd, "/c", config.curl, "-sSf", ...resolveArgs, url);
+    guardianArgs.push(cmd, "/c", config.curl, "-sSf", url);
   } else if (config.childShell) {
-    const resolve = resolveArgs.join(" ");
-    const inner = `${config.curl} -sSf ${resolve} '${url}'`.trim();
+    const inner = `${config.curl} -sSf '${url}'`.trim();
     guardianArgs.push(...config.childShell, inner);
   } else {
     throw new Error("platform config missing child spawn wrapper");
@@ -110,12 +82,12 @@ function runChild(
   return runGuardian(guardianArgs);
 }
 
-function runCase(c: SmokeCase, url: string, resolveArgs: string[]): void {
+function runCase(c: SmokeCase, url: string): void {
   console.log(`==> smoke case: ${c.name}`);
   const result =
     c.command === "direct"
-      ? runDirect(c.silent, url, resolveArgs)
-      : runChild(c.silent, url, resolveArgs);
+      ? runDirect(c.silent, url)
+      : runChild(c.silent, url);
 
   assertExit(c.expectExit, result.exitCode);
   if (c.expectStdoutNonempty) {
@@ -132,11 +104,9 @@ export async function runSmokeCases(): Promise<void> {
   assertGuardianBuilt(config);
 
   const url = smokeUrl();
-  const host = urlHost(url);
-  const resolveArgs = curlResolveArgs(url, host);
 
   for (const c of smokeCases) {
-    runCase(c, url, resolveArgs);
+    runCase(c, url);
   }
   console.log("All smoke cases passed.");
 }

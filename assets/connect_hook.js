@@ -1,8 +1,10 @@
-// Adapted from fritm (https://github.com/louisabraham/fritm).
-// Templates: PORT, FILTER (JS expression), BIND_HOST (four IPv4 octets).
+// Adapted from fritm (https://github.com/louisabraham/fritm) and HTTP Toolkit native-connect-hook.
+// Templates: PORT, FILTER (JS expression), BIND_HOST, BIND_HOST_0..3 (IPv4 octets).
 // IPv6 destinations are not hooked in v1.
 
 var PORT = {{PORT}};
+var BIND_HOST = "{{BIND_HOST}}";
+var __guardianHostByIp = {};
 
 function globalExport(name) {
     if (typeof Module.getGlobalExportByName === 'function') {
@@ -16,6 +18,82 @@ function globalExport(name) {
 
 function filter(sa_family, addr, port) {
     return {{FILTER}};
+}
+
+function connectTarget(ip) {
+    if (__guardianHostByIp[ip]) {
+        return __guardianHostByIp[ip];
+    }
+    return ip;
+}
+
+function rememberHostIp(host, ip) {
+    if (host && ip) {
+        __guardianHostByIp[ip] = host;
+    }
+}
+
+function ipv4FromSockaddr(addrPtr) {
+    var ip = "";
+    for (var i = 0; i < 4; i++) {
+        ip += addrPtr.add(4 + i).readU8();
+        if (i < 3) {
+            ip += '.';
+        }
+    }
+    return ip;
+}
+
+function mapAddrinfoResults(host, resPtr) {
+    if (!host || resPtr.isNull()) {
+        return;
+    }
+    var aiFamilyOff = 4;
+    var aiAddrOff = Process.pointerSize === 8 ? 32 : 20;
+    var aiNextOff = Process.pointerSize === 8 ? 48 : 28;
+    var cur = resPtr;
+    while (!cur.isNull()) {
+        if (cur.add(aiFamilyOff).readS32() === 2) {
+            var addr = cur.add(aiAddrOff).readPointer();
+            if (!addr.isNull()) {
+                rememberHostIp(host, ipv4FromSockaddr(addr));
+            }
+        }
+        cur = cur.add(aiNextOff).readPointer();
+    }
+}
+
+function hookResolveMap(name, fn, readHost) {
+    if (!fn) {
+        return;
+    }
+    Interceptor.attach(fn, {
+        onEnter: function (args) {
+            this.host = args[0].isNull() ? null : readHost(args[0]);
+            this.resOut = args[3];
+        },
+        onLeave: function (retval) {
+            if (retval.toInt32() !== 0 || !this.host) {
+                return;
+            }
+            mapAddrinfoResults(this.host, this.resOut.readPointer());
+        }
+    });
+}
+
+// attach-only getaddrinfo map: IP -> hostname for CONNECT authority (MITM cert SNI)
+if (Process.platform === 'windows') {
+    hookResolveMap(
+        'GetAddrInfoW',
+        globalExport('GetAddrInfoW'),
+        function (p) { return p.readUtf16String(); }
+    );
+} else {
+    hookResolveMap(
+        'getaddrinfo',
+        globalExport('getaddrinfo'),
+        function (p) { return p.readUtf8String(); }
+    );
 }
 
 function ensureBlockingSocket(sockfd) {
@@ -32,7 +110,6 @@ function ensureBlockingSocket(sockfd) {
     }
 }
 
-// Bytes read past the CONNECT response headers must be replayed on the next recv/read.
 var recvCarry = {};
 
 function storeCarry(sockfd, bytes) {
@@ -87,13 +164,21 @@ function hookConnect(connect_p, send_p, recv_p) {
     Interceptor.attach(connect_p, {
         onEnter: function (args) {
             this.sockfd = args[0];
+            var sockfd = this.sockfd.toInt32();
+            var sockType = Socket.type(sockfd);
+            if (sockType !== 'tcp' && sockType !== 'tcp6') {
+                this.hook = false;
+                return;
+            }
+
             var sockaddr_p = args[1];
             this.sa_family = sockaddr_p.add(1).readU8();
             this.port = 256 * sockaddr_p.add(2).readU8() + sockaddr_p.add(3).readU8();
-            this.addr = "";
-            for (var i = 0; i < 4; i++) {
-                this.addr += sockaddr_p.add(4 + i).readU8();
-                if (i < 3) this.addr += '.';
+            this.addr = ipv4FromSockaddr(sockaddr_p);
+
+            if (this.addr === BIND_HOST && this.port === PORT) {
+                this.hook = false;
+                return;
             }
 
             this.hook = filter(this.sa_family, this.addr, this.port);
@@ -112,8 +197,9 @@ function hookConnect(connect_p, send_p, recv_p) {
             var sockfd = this.sockfd.toInt32();
             ensureBlockingSocket(sockfd);
 
-            var connect_request = "CONNECT " + this.addr + ":" + this.port + " HTTP/1.1\r\n"
-                + "Host: " + this.addr + ":" + this.port + "\r\n"
+            var target = connectTarget(this.addr);
+            var connect_request = "CONNECT " + target + ":" + this.port + " HTTP/1.1\r\n"
+                + "Host: " + target + ":" + this.port + "\r\n"
                 + "Proxy-Connection: Keep-Alive\r\n"
                 + "\r\n";
             var buf_send = Memory.allocUtf8String(connect_request);
@@ -172,3 +258,26 @@ if (Process.platform === 'windows') {
     hookRecvCarry(recv_p);
     hookRecvCarry(read_p);
 }
+
+// Force http/1.1 ALPN so MITM TLS does not negotiate HTTP/2 (unsupported on this path).
+(function hookClientAlpn() {
+    var http1 = Memory.alloc(9);
+    http1.writeByteArray([8, 0x68, 0x74, 0x74, 0x70, 0x2f, 0x31, 0x2e, 0x31]);
+    var callbacks = [];
+
+    function replaceAlpn(name) {
+        var fn = globalExport(name);
+        if (!fn) {
+            return;
+        }
+        var orig = new NativeFunction(fn, 'int', ['pointer', 'pointer', 'uint']);
+        var cb = new NativeCallback(function (ctx, _protos, _len) {
+            return orig(ctx, http1, 9);
+        }, 'int', ['pointer', 'pointer', 'uint']);
+        callbacks.push(cb);
+        Interceptor.replace(fn, cb);
+    }
+
+    replaceAlpn('SSL_CTX_set_alpn_protos');
+    replaceAlpn('SSL_set_alpn_protos');
+})();

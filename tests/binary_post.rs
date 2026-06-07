@@ -17,12 +17,9 @@ fn binary_request_body_serializes_in_jsonl() {
     let bytes: Vec<u8> = (0..=255).collect();
     fs::write(&payload_path, &bytes).expect("write payload");
 
-    let host = common::url_host("http://httpbin.org/post");
-    let ip = common::resolve_ipv4(&host);
-
     let curl = common::curl_program();
     let ca_dir = TempDir::new().expect("ca dir");
-    let mut args = vec![
+    let args = vec![
         "--body-limit".to_string(),
         "48".to_string(),
         "--ca-dir".to_string(),
@@ -34,12 +31,8 @@ fn binary_request_body_serializes_in_jsonl() {
         "POST".to_string(),
         "--data-binary".to_string(),
         format!("@{}", payload_path.display()),
+        "http://httpbin.org/post".to_string(),
     ];
-    if let Some(ip) = ip {
-        args.push("--resolve".to_string());
-        args.push(format!("{host}:80:{ip}"));
-    }
-    args.push("http://httpbin.org/post".to_string());
 
     let bin = common::guardian_bin();
     let mut child = std::process::Command::new(&bin)

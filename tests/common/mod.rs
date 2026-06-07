@@ -9,6 +9,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 const DEFAULT_SMOKE_URL: &str = "http://httpbin.org/get";
+const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbin.org/get";
 
 pub struct GuardianRun {
     pub exit_code: i32,
@@ -21,6 +22,10 @@ pub struct GuardianRun {
 
 pub fn smoke_url() -> String {
     std::env::var("SMOKE_URL").unwrap_or_else(|_| DEFAULT_SMOKE_URL.to_string())
+}
+
+pub fn smoke_https_url() -> String {
+    std::env::var("SMOKE_HTTPS_URL").unwrap_or_else(|_| DEFAULT_HTTPS_SMOKE_URL.to_string())
 }
 
 pub fn portable_jdk_home() -> Option<PathBuf> {
@@ -123,65 +128,8 @@ pub fn resolve_executable(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-fn ipv4_from_command(mut cmd: Command) -> Option<String> {
-    cmd.output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|stdout| {
-            stdout
-                .lines()
-                .find_map(|line| {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        return None;
-                    }
-                    if let Some(rest) = line.strip_prefix("ipv4:") {
-                        let ip = rest.split_whitespace().next()?.trim();
-                        return Some(ip.to_string());
-                    }
-                    if let Some(rest) = line.strip_prefix("ip_address:") {
-                        let ip = rest.split_whitespace().next()?.trim();
-                        return Some(ip.to_string());
-                    }
-                    line.split_whitespace().next().map(str::to_string)
-                })
-        })
-        .filter(|ip| ip.chars().all(|c| c.is_ascii_digit() || c == '.'))
-}
-
-pub fn resolve_ipv4(host: &str) -> Option<String> {
-    {
-        let mut cmd = Command::new("getent");
-        cmd.args(["ahostsv4", host]);
-        if let Some(ip) = ipv4_from_command(cmd) {
-            return Some(ip);
-        }
-    }
-    {
-        let mut cmd = Command::new("dscacheutil");
-        cmd.args(["-q", "host", "-a", "name", host]);
-        if let Some(ip) = ipv4_from_command(cmd) {
-            return Some(ip);
-        }
-    }
-    {
-        let mut cmd = Command::new("dig");
-        cmd.args(["+short", "A", host]);
-        ipv4_from_command(cmd)
-    }
-}
-
 fn curl_args(url: &str) -> Vec<String> {
-    let mut args = vec![curl_program(), "-sS".to_string()];
-    let host = url_host(url);
-    if let Some(ip) = resolve_ipv4(&host) {
-        let port = if url.starts_with("https://") { "443" } else { "80" };
-        args.push("--resolve".to_string());
-        args.push(format!("{host}:{port}:{ip}"));
-    }
-    args.push(url.to_string());
-    args
+    vec![curl_program(), "-sS".to_string(), url.to_string()]
 }
 
 pub fn run_guardian_echo_env_var(
@@ -248,6 +196,7 @@ pub fn run_guardian_echo_env_var(
 pub fn run_guardian_direct_https(silent: bool) -> std::io::Result<GuardianRun> {
     run_guardian_with_options(GuardianOptions {
         silent,
+        url: Some(smoke_https_url()),
         ..GuardianOptions::default()
     })
 }
@@ -328,34 +277,20 @@ fn run_guardian_child_spawn_once(silent: bool) -> std::io::Result<GuardianRun> {
     args.push(ca_dir.path().display().to_string());
     args.push("--".to_string());
 
-    let host = url_host(&url);
-    let port = if url.starts_with("https://") { "443" } else { "80" };
-
     if cfg!(windows) {
         args.push(cmd_program());
         args.push("/c".to_string());
         args.push(curl_program());
         args.push("-sS".to_string());
-        if let Some(ip) = resolve_ipv4(&host) {
-            args.push("--resolve".to_string());
-            args.push(format!("{host}:{port}:{ip}"));
-        }
         args.push(url);
     } else if let Some(wrapper) = child_wrapper_program() {
         args.push(wrapper);
         args.push(curl_program());
         args.push("-sS".to_string());
-        if let Some(ip) = resolve_ipv4(&host) {
-            args.push("--resolve".to_string());
-            args.push(format!("{host}:{port}:{ip}"));
-        }
         args.push(url);
     } else {
-        let resolve = resolve_ipv4(&host)
-            .map(|ip| format!("--resolve {host}:{port}:{ip}"))
-            .unwrap_or_default();
         let sh = resolve_executable("sh");
-        let inner = format!("{} -sS {} '{}'", curl_program(), resolve, url);
+        let inner = format!("{} -sS '{}'", curl_program(), url);
         args.push(sh);
         args.push("-c".to_string());
         args.push(inner);
@@ -448,6 +383,10 @@ pub fn parse_jsonl(stderr: &str) -> Vec<Value> {
 }
 
 pub fn assert_http_jsonl(run: &GuardianRun) {
+    assert_http_jsonl_for_url(run, &smoke_url());
+}
+
+pub fn assert_http_jsonl_for_url(run: &GuardianRun, url: &str) {
     assert_eq!(
         run.exit_code, 0,
         "guardian exited with {}; stderr:\n{}",
@@ -468,8 +407,7 @@ pub fn assert_http_jsonl(run: &GuardianRun) {
         "expected at least one http JSONL event; stderr:\n{}",
         run.stderr
     );
-    let url = smoke_url();
-    let host = url_host(&url);
+    let host = url_host(url);
     let matched = http_events.iter().any(|ev| {
         ev.get("request")
             .and_then(|r| r.get("uri"))
