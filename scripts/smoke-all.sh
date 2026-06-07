@@ -13,7 +13,7 @@ export SMOKE_PLATFORM=linux
 ./scripts/smoke/run.sh
 
 LINUX_BIN="target/x86_64-unknown-linux-gnu/release/guardian"
-WIN_BIN="$(
+WIN_BIN_WIN="$(
     powershell.exe -NoProfile -Command "Join-Path \$env:USERPROFILE 'guardian-smoke-build\\target\\release\\guardian.exe'" 2>/dev/null | tr -d '\r'
 )"
 
@@ -23,12 +23,12 @@ if [[ ! -f "$LINUX_BIN" ]]; then
 fi
 
 if command -v powershell.exe >/dev/null 2>&1; then
-    if [[ ! -f "$WIN_BIN" ]]; then
-        echo "missing Windows artifact: $WIN_BIN (run scripts/build-win-smoke.ps1)" >&2
+    WIN_BIN_WSL=$(wslpath -u "$WIN_BIN_WIN")
+    if [[ ! -f "$WIN_BIN_WSL" ]]; then
+        echo "missing Windows artifact: $WIN_BIN_WIN (run scripts/build-win-smoke.ps1)" >&2
         exit 1
     fi
-    WIN_PATH=$(wslpath -w "$WIN_BIN")
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/smoke/run.ps1 -GuardianBin "$WIN_PATH"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/smoke/run.ps1 -GuardianBin "$WIN_BIN_WIN"
 else
     echo "powershell.exe not found; skipping Windows smoke" >&2
 fi

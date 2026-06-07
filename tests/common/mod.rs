@@ -87,6 +87,67 @@ fn curl_args(url: &str) -> Vec<String> {
     args
 }
 
+pub fn run_guardian_echo_env_var(
+    var: &str,
+    preset: &[(&str, &str)],
+    java_home: Option<&Path>,
+) -> std::io::Result<GuardianRun> {
+    let ca_dir = TempDir::new()?;
+    let child_args: Vec<String> = if cfg!(windows) {
+        vec![
+            cmd_program(),
+            "/c".to_string(),
+            format!("echo %{}%", var),
+        ]
+    } else {
+        let sh = resolve_executable("sh");
+        vec![
+            sh,
+            "-c".to_string(),
+            format!("echo ${var}"),
+        ]
+    };
+
+    let mut args = vec![
+        "--ca-dir".to_string(),
+        ca_dir.path().display().to_string(),
+        "--".to_string(),
+    ];
+    args.extend(child_args);
+
+    let mut cmd = Command::new(guardian_bin());
+    if let Some(home) = java_home {
+        if home.join("bin/keytool").is_file() {
+            cmd.env("JAVA_HOME", home);
+        }
+    }
+    for (k, v) in preset {
+        cmd.env(k, v);
+    }
+    cmd.args(&args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut process = cmd.spawn()?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = process.stdout.take() {
+        out.read_to_end(&mut stdout_bytes)?;
+    }
+    if let Some(mut err) = process.stderr.take() {
+        err.read_to_string(&mut stderr)?;
+    }
+    let status = process.wait()?;
+    let jsonl = parse_jsonl(&stderr);
+    Ok(GuardianRun {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr,
+        jsonl,
+        _ca_dir: ca_dir,
+    })
+}
+
 pub fn run_guardian_direct_https(silent: bool) -> std::io::Result<GuardianRun> {
     run_guardian_with_options(GuardianOptions {
         silent,
@@ -163,16 +224,21 @@ pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
 
     let host = url_host(&url);
     let port = if url.starts_with("https://") { "443" } else { "80" };
-    let resolve = resolve_ipv4(&host)
-        .map(|ip| format!("--resolve {host}:{port}:{ip}"))
-        .unwrap_or_default();
 
     if cfg!(windows) {
-        let inner = format!("{} -sSf {} {}", curl_program(), resolve, url);
         args.push(cmd_program());
         args.push("/c".to_string());
-        args.push(format!("\"{inner}\""));
+        args.push(curl_program());
+        args.push("-sSf".to_string());
+        if let Some(ip) = resolve_ipv4(&host) {
+            args.push("--resolve".to_string());
+            args.push(format!("{host}:{port}:{ip}"));
+        }
+        args.push(url);
     } else {
+        let resolve = resolve_ipv4(&host)
+            .map(|ip| format!("--resolve {host}:{port}:{ip}"))
+            .unwrap_or_default();
         let sh = resolve_executable("sh");
         let inner = format!("{} -sSf {} '{}'", curl_program(), resolve, url);
         args.push(sh);

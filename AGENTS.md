@@ -183,19 +183,20 @@ Integration tests use `getent ahostsv4` + `curl --resolve` because DNS from hook
 | `tests/invalid_bind.rs`, `spawn_failure.rs` | CLI / spawn error paths |
 | `src/port.rs`, `src/config.rs`, `src/cli.rs`, `src/injector.rs`, `src/main.rs` | Small unit tests for real parsing, hooks, and OS primitives |
 
-### Smoke (cross-built release artifacts)
+### Smoke (release artifacts)
 
-Prerequisites: `cargo-zigbuild`, `cargo-xwin`, `curl`, Frida devkits via `frida` crate `auto-download`.
+Prerequisites: `cargo-zigbuild`, `curl`, Frida devkits via `frida` crate `auto-download`. Windows host: Strawberry Perl + LLVM for native MSVC build (`build-win-smoke.ps1`).
 
 ```bash
-./scripts/build-smoke.sh          # zigbuild linux-gnu + xwin windows-msvc + stage runtime libs
+./scripts/build-smoke.sh          # zigbuild linux-gnu + stage runtime libs
+./scripts/build-win-smoke.ps1     # native Windows MSVC (from WSL via powershell.exe)
 ./scripts/smoke/run.sh            # Linux ELF smoke (WSL)
-./scripts/smoke-all.sh            # build-smoke + Linux smoke + Windows smoke via powershell.exe
+./scripts/smoke-all.sh            # build-smoke + build-win-smoke + Linux + Windows smoke
 ```
 
-Override cross-built binary during dev: `GUARDIAN_BIN=target/debug/guardian ./scripts/smoke/run.sh`.
+Override binary during dev: `GUARDIAN_BIN=target/debug/guardian ./scripts/smoke/run.sh`.
 
-Windows smoke uses a native MSVC build via `scripts/build-win-smoke.ps1` (syncs to `%USERPROFILE%\guardian-smoke-build` on NTFS). Requires Strawberry Perl + LLVM (`LIBCLANG_PATH`) on the Windows host for Frida bindgen/OpenSSL.
+Windows smoke runs `%USERPROFILE%\guardian-smoke-build\target\release\guardian.exe` (repo synced to NTFS via `sync-win-smoke-build.ps1` before `cargo build --release`).
 
 `SMOKE_URL` overrides the default live endpoint. `SMOKE_SKIP_BUILD=1` skips `build-smoke.sh` in `smoke-all.sh`.
 
