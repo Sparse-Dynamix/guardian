@@ -23,6 +23,16 @@ pub fn smoke_url() -> String {
     std::env::var("SMOKE_URL").unwrap_or_else(|_| DEFAULT_SMOKE_URL.to_string())
 }
 
+pub fn portable_jdk_home() -> Option<PathBuf> {
+    let jdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
+    let keytool = if cfg!(windows) {
+        jdk.join("bin/keytool.exe")
+    } else {
+        jdk.join("bin/keytool")
+    };
+    keytool.is_file().then_some(jdk)
+}
+
 pub fn guardian_bin() -> PathBuf {
     if let Ok(path) = std::env::var("GUARDIAN_BIN") {
         return PathBuf::from(path);
@@ -117,9 +127,7 @@ pub fn run_guardian_echo_env_var(
 
     let mut cmd = Command::new(guardian_bin());
     if let Some(home) = java_home {
-        if home.join("bin/keytool").is_file() {
-            cmd.env("JAVA_HOME", home);
-        }
+        cmd.env("JAVA_HOME", home);
     }
     for (k, v) in preset {
         cmd.env(k, v);

@@ -1,21 +1,13 @@
 mod common;
 
-use std::path::PathBuf;
-
-use common::require_network;
-
-fn portable_java_home() -> Option<PathBuf> {
-    let jdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
-    let keytool = jdk.join("bin/keytool");
-    keytool.is_file().then_some(jdk)
-}
+use common::{portable_jdk_home, require_network};
 
 #[test]
 fn java_truststore_created_when_keytool_available() {
     if !require_network() {
         return;
     }
-    let Some(java_home) = portable_java_home() else {
+    let Some(java_home) = portable_jdk_home() else {
         eprintln!("skipping: portable JDK not found at .cache/jdk-17 (run scripts/coverage.sh once)");
         return;
     };

@@ -9,6 +9,7 @@ mod proxy;
 
 use std::io::Write;
 use std::net::IpAddr;
+use std::process::ExitCode;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -183,22 +184,60 @@ async fn run(settings: Settings) -> Result<i32> {
     Ok(normalize_exit_code(outcome.exit_code))
 }
 
+fn exit_code_from_run(result: Result<i32>) -> ExitCode {
+    match result {
+        Ok(code) => ExitCode::from(normalize_exit_code(code) as u8),
+        Err(e) => {
+            eprintln!("Error: {:#}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Error: failed to start async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    exit_code_from_run(runtime.block_on(async_main()))
+}
+
+async fn async_main() -> Result<i32> {
+    let cli = Cli::parse();
+    let settings = resolve_settings(&cli)?;
+    init_tracing(cli.verbose, &settings);
+    run(settings).await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalize_exit_code;
+    use std::process::ExitCode;
+
+    use super::{exit_code_from_run, normalize_exit_code};
 
     #[test]
     fn normalize_exit_code_passes_through_on_unix() {
         assert_eq!(normalize_exit_code(0), 0);
         assert_eq!(normalize_exit_code(130), 130);
     }
-}
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let settings = resolve_settings(&cli)?;
-    init_tracing(cli.verbose, &settings);
-    let code = run(settings).await?;
-    std::process::exit(code);
+    #[test]
+    fn normalize_exit_code_masks_high_byte_on_windows() {
+        if cfg!(windows) {
+            assert_eq!(normalize_exit_code(260), 4);
+        }
+    }
+
+    #[test]
+    fn exit_code_from_run_maps_success_and_failure() {
+        assert_eq!(exit_code_from_run(Ok(0)), ExitCode::SUCCESS);
+        assert_eq!(exit_code_from_run(Ok(42)), ExitCode::from(42));
+        assert_eq!(
+            exit_code_from_run(Err(anyhow::anyhow!("boom"))),
+            ExitCode::FAILURE
+        );
+    }
 }

@@ -5,10 +5,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $RepoRoot "scripts/sync-win-smoke-build.ps1")
 
 $dest = Join-Path $env:USERPROFILE "guardian-smoke-build"
-$llvm = "C:\Program Files\LLVM\bin"
-$perl = "C:\Strawberry\perl\bin"
-$env:Path = "$perl;$llvm;" + $env:Path
-$env:LIBCLANG_PATH = $llvm
+. (Join-Path $PSScriptRoot "lib\win-msvc-env.ps1")
 
 Set-Location $dest
 Write-Host "Building guardian.exe in $dest"

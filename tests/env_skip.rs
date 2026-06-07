@@ -1,6 +1,6 @@
 mod common;
 
-use common::{require_network, run_guardian_echo_env_var};
+use common::{portable_jdk_home, require_network, run_guardian_echo_env_var};
 
 #[test]
 fn skips_ca_env_when_parent_already_sets_bundle() {
@@ -22,11 +22,10 @@ fn skips_java_tool_options_when_truststore_already_set() {
     if !require_network() {
         return;
     }
-    let jdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
-    if !jdk.join("bin/keytool").is_file() {
+    let Some(jdk) = portable_jdk_home() else {
         eprintln!("skipping: portable JDK not found at .cache/jdk-17");
         return;
-    }
+    };
     let existing = "-Djavax.net.ssl.trustStore=/existing.p12 -Dfoo=bar";
     let run = run_guardian_echo_env_var(
         "JAVA_TOOL_OPTIONS",

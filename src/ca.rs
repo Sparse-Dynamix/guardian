@@ -172,16 +172,27 @@ fn load_system_roots_pem() -> Result<Vec<u8>> {
     Ok(pem)
 }
 
+fn keytool_in_bin_dir(bin_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let exe = bin_dir.join("keytool.exe");
+        if exe.is_file() {
+            return exe;
+        }
+    }
+    bin_dir.join("keytool")
+}
+
 fn find_keytool() -> Option<PathBuf> {
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
-        let candidate = PathBuf::from(&java_home).join("bin/keytool");
+        let candidate = keytool_in_bin_dir(&PathBuf::from(&java_home).join("bin"));
         if candidate.is_file() {
             return Some(candidate);
         }
     }
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join("keytool");
+            let candidate = keytool_in_bin_dir(&dir);
             candidate.is_file().then_some(candidate)
         })
     })
@@ -266,4 +277,27 @@ fn build_java_truststore(
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::CaTrust;
+
+    #[test]
+    fn env_for_child_merges_node_options_when_flag_missing() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: None,
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let env = trust.env_for_child(&[("NODE_OPTIONS".into(), "--max-old-space-size=64".into())]);
+        assert!(env.iter().any(|(k, v)| {
+            k == "NODE_OPTIONS" && v.contains("--use-openssl-ca") && v.contains("--max-old-space-size=64")
+        }));
+    }
 }

@@ -208,7 +208,7 @@ Windows host additionally needs [Strawberry Perl](https://strawberryperl.com/) a
 
 ```bash
 ./scripts/coverage.sh                                    # Linux/WSL: integration tests + --features ws-smoke
-powershell.exe -NoProfile -File scripts/coverage.ps1     # native Windows MSVC (same feature flag)
+powershell.exe -NoProfile -File scripts/coverage.ps1     # native Windows MSVC; auto-syncs to %USERPROFILE%\guardian-smoke-build when run from WSL
 ```
 
 Coverage uses `cargo llvm-cov` on the real `tests/` crate (not cross-compiled smoke release binaries). Scripts enforce `--fail-under-lines 90` per OS. Add new **real** integration scenarios rather than mocks or widening `.llvmcov.toml` beyond `build.rs` if coverage drops.
