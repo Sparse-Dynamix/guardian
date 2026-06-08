@@ -31,13 +31,15 @@ fn body_limit_truncates_jsonl_previews() {
                 .expect("http JSONL event");
             let response = http.get("response").expect("response object");
             assert_eq!(
-                response
-                    .get("body_truncated")
-                    .and_then(|v| v.as_bool()),
+                response.get("body_truncated").and_then(|v| v.as_bool()),
                 Some(true)
             );
             assert!(
-                response.get("body_len").and_then(|v| v.as_u64()).unwrap_or(0) >= 512,
+                response
+                    .get("body_len")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    >= 512,
                 "JSONL should record the full captured body length"
             );
             return;
@@ -63,13 +65,15 @@ fn body_limit_truncates_jsonl_previews() {
         .expect("http JSONL event");
     let response = http.get("response").expect("response object");
     assert_eq!(
-        response
-            .get("body_truncated")
-            .and_then(|v| v.as_bool()),
+        response.get("body_truncated").and_then(|v| v.as_bool()),
         Some(true)
     );
     assert!(
-        response.get("body_len").and_then(|v| v.as_u64()).unwrap_or(0) >= 512,
+        response
+            .get("body_len")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            >= 512,
         "JSONL should record the full captured body length"
     );
 }

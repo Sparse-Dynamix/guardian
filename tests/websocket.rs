@@ -67,7 +67,5 @@ fn wss_echo_logs_websocket_jsonl() {
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
     }
-    panic!(
-        "websocket smoke failed after retries; last stderr:\n{last_stderr}"
-    );
+    panic!("websocket smoke failed after retries; last stderr:\n{last_stderr}");
 }

@@ -173,13 +173,8 @@ pub fn run_injection_coordinated(
         .spawn(&settings.program, &mut spawn_options)
         .context("frida spawn failed")?;
 
-    let port = resolve_listen_port(
-        bind_ip,
-        settings.port,
-        settings.port_min,
-        settings.port_max,
-    )
-    .context("failed to resolve proxy listen port")?;
+    let port = resolve_listen_port(bind_ip, settings.port, settings.port_min, settings.port_max)
+        .context("failed to resolve proxy listen port")?;
 
     port_tx
         .send(port)
@@ -190,22 +185,11 @@ pub fn run_injection_coordinated(
         return Ok(SpawnOutcome { exit_code: 130 });
     }
 
-    let hook_bundle = build_hook_bundle(
-        port,
-        &settings.filter,
-        settings.bind,
-        ca_trust,
-    )?;
+    let hook_bundle = build_hook_bundle(port, &settings.filter, settings.bind, ca_trust)?;
     let mut sessions: HashMap<u32, TrackedSession<'_>> = HashMap::new();
 
-    instrument(
-        &device,
-        &mut sessions,
-        root_pid,
-        &hook_bundle,
-        &event_tx,
-    )
-    .context("failed to instrument root process")?;
+    instrument(&device, &mut sessions, root_pid, &hook_bundle, &event_tx)
+        .context("failed to instrument root process")?;
 
     let exit_code = wait_for_root(
         root_pid,
@@ -291,8 +275,9 @@ fn wait_for_root<'a>(
                 }
                 ProcessEvent::ProcessReplaced(pid) => {
                     sessions.remove(&pid);
-                    instrument(device, sessions, pid, hook_bundle, event_tx)
-                        .with_context(|| format!("failed to re-instrument pid {pid} after process replacement"))?;
+                    instrument(device, sessions, pid, hook_bundle, event_tx).with_context(
+                        || format!("failed to re-instrument pid {pid} after process replacement"),
+                    )?;
                 }
                 ProcessEvent::ChildAdded(pid) => {
                     instrument(device, sessions, pid, hook_bundle, event_tx)
@@ -304,8 +289,7 @@ fn wait_for_root<'a>(
         match try_wait_pid(root_pid) {
             WaitStatus::Exited(code) => return Ok(code),
             WaitStatus::StillRunning => {
-                match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms))
-                {
+                match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms)) {
                     Ok(()) | Err(RecvTimeoutError::Disconnected) => {
                         terminate_pid(root_pid);
                         sessions.clear();

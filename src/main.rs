@@ -204,7 +204,10 @@ fn exit_code_from_run(result: Result<i32>) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("Error: failed to start async runtime: {e}");

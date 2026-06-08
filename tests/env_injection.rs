@@ -59,7 +59,8 @@ fn child_inherits_ca_bundle_env() {
     if !require_network() {
         return;
     }
-    let run = run_guardian_echo_env_var("CURL_CA_BUNDLE", &[], None).expect("failed to spawn guardian");
+    let run =
+        run_guardian_echo_env_var("CURL_CA_BUNDLE", &[], None).expect("failed to spawn guardian");
     assert_eq!(run.exit_code, 0, "stderr:\n{}", run.stderr);
     assert!(
         run.stdout.contains("guardian-ca-bundle.pem"),

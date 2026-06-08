@@ -3,8 +3,9 @@ use std::ffi::CString;
 use anyhow::{bail, Result};
 use frida::Session;
 use frida_sys::{
-    frida_child_get_pid, frida_session_enable_child_gating_sync, gpointer, GCallback,
-    FridaSessionDetachReason, FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED,
+    frida_child_get_pid, frida_session_enable_child_gating_sync, gpointer,
+    FridaSessionDetachReason,
+    FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED, GCallback,
 };
 
 #[cfg(target_os = "linux")]
@@ -28,7 +29,11 @@ unsafe fn device_ptr(device: &frida::Device) -> *mut frida_sys::_FridaDevice {
 pub fn enable_child_gating(session: &Session) -> Result<()> {
     let mut error: *mut frida_sys::GError = std::ptr::null_mut();
     unsafe {
-        frida_session_enable_child_gating_sync(session_ptr(session), std::ptr::null_mut(), &mut error);
+        frida_session_enable_child_gating_sync(
+            session_ptr(session),
+            std::ptr::null_mut(),
+            &mut error,
+        );
     }
     if !error.is_null() {
         let msg = unsafe { std::ffi::CStr::from_ptr((*error).message) };
@@ -68,10 +73,7 @@ unsafe extern "C" fn on_child_removed(
     (cb.on_removed)(pid);
 }
 
-unsafe extern "C" fn destroy_device_callbacks(
-    data: gpointer,
-    _closure: *mut frida_sys::GClosure,
-) {
+unsafe extern "C" fn destroy_device_callbacks(data: gpointer, _closure: *mut frida_sys::GClosure) {
     if !data.is_null() {
         let _ = Box::from_raw(data as *mut DeviceCallbacks);
     }
@@ -169,10 +171,7 @@ unsafe extern "C" fn on_session_detached(
     (cb.on_detached)(reason);
 }
 
-unsafe extern "C" fn destroy_session_callback(
-    data: gpointer,
-    _closure: *mut frida_sys::GClosure,
-) {
+unsafe extern "C" fn destroy_session_callback(data: gpointer, _closure: *mut frida_sys::GClosure) {
     if !data.is_null() {
         let _ = Box::from_raw(data as *mut SessionDetachedCallback);
     }

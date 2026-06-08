@@ -1,8 +1,6 @@
 mod common;
 
-use common::{
-    require_network, smoke_url, staged_curl_program, staged_sh_program,
-};
+use common::{require_network, smoke_url, staged_curl_program, staged_sh_program};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 

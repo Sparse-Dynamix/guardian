@@ -1,6 +1,8 @@
 mod common;
 
-use common::{assert_http_jsonl_for_url, require_network, run_guardian_direct_https, smoke_https_url};
+use common::{
+    assert_http_jsonl_for_url, require_network, run_guardian_direct_https, smoke_https_url,
+};
 
 #[test]
 fn direct_https_intercepts_and_logs_jsonl() {

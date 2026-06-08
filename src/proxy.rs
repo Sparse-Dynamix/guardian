@@ -34,7 +34,10 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
     let cancel_for_proxy = cancel.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = proxy.start(cancel_for_proxy.clone().cancelled_owned()).await {
+        if let Err(e) = proxy
+            .start(cancel_for_proxy.clone().cancelled_owned())
+            .await
+        {
             tracing::error!(target: "guardian", "proxy error: {e}");
             cancel_for_proxy.cancel();
         }

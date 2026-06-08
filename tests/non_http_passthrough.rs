@@ -2,13 +2,17 @@ mod common;
 
 use std::process::{Command, Stdio};
 
-use common::{guardian_bin, curl_program};
+use common::{curl_program, guardian_bin};
 
 /// Denylisted port 22 must not produce proxy HTTP JSONL events.
 #[test]
 fn ssh_port_not_intercepted() {
     let bin = guardian_bin();
-    assert!(bin.is_file(), "guardian binary missing at {}", bin.display());
+    assert!(
+        bin.is_file(),
+        "guardian binary missing at {}",
+        bin.display()
+    );
 
     let ca_dir = tempfile::TempDir::new().expect("tempdir");
     let curl = curl_program();

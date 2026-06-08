@@ -7,7 +7,9 @@
     "smoke": "node --import tsx ./node_modules/zx/build/cli.js scripts/smoke.zx.ts",
     "test": "npm run smoke",
     "coverage": "node --import tsx ./node_modules/zx/build/cli.js scripts/coverage.zx.ts",
-    "format": "biome format --write"
+    "format:js": "biome format --write",
+    "format:rs": "cargo fmt",
+    "format": "npm-run-all --parallel format:js format:rs"
   },
   "repository": {
     "type": "git",
@@ -23,6 +25,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
     "@types/node": "^25.9.1",
+    "npm-run-all": "^4.1.5",
     "tsx": "^4.22.4",
     "zx": "^8.8.5"
   }

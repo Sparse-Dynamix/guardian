@@ -38,9 +38,7 @@ port = 18082
         .expect("http event");
     let response = http.get("response").expect("response");
     assert_eq!(
-        response
-            .get("body_truncated")
-            .and_then(|v| v.as_bool()),
+        response.get("body_truncated").and_then(|v| v.as_bool()),
         Some(true),
         "config body_limit should truncate JSONL response preview"
     );

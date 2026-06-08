@@ -89,16 +89,16 @@ fn headers_map(headers: &http::HeaderMap) -> HashMap<String, String> {
 
 fn body_field(body: &[u8], limit: usize) -> (Value, bool, usize) {
     let full_len = body.len();
-    let slice = if body.len() > limit { &body[..limit] } else { body };
+    let slice = if body.len() > limit {
+        &body[..limit]
+    } else {
+        body
+    };
     let truncated = full_len > limit;
     if let Ok(text) = std::str::from_utf8(slice) {
         (Value::String(text.to_string()), truncated, full_len)
     } else {
-        (
-            Value::String(STANDARD.encode(slice)),
-            truncated,
-            full_len,
-        )
+        (Value::String(STANDARD.encode(slice)), truncated, full_len)
     }
 }
 
@@ -129,19 +129,15 @@ fn response_json(resp: &ProxiedResponse, limit: usize) -> Value {
 
 fn payload_preview(payload: &[u8], limit: usize) -> (String, bool, Option<String>) {
     let truncated = payload.len() > limit;
-    let slice = if truncated { &payload[..limit] } else { payload };
-    if std::str::from_utf8(slice).is_ok() {
-        (
-            String::from_utf8_lossy(slice).into_owned(),
-            truncated,
-            None,
-        )
+    let slice = if truncated {
+        &payload[..limit]
     } else {
-        (
-            String::new(),
-            truncated,
-            Some(STANDARD.encode(slice)),
-        )
+        payload
+    };
+    if std::str::from_utf8(slice).is_ok() {
+        (String::from_utf8_lossy(slice).into_owned(), truncated, None)
+    } else {
+        (String::new(), truncated, Some(STANDARD.encode(slice)))
     }
 }
 

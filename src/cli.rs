@@ -70,7 +70,10 @@ mod tests {
 
     #[test]
     fn parse_bind_accepts_ipv4() {
-        assert_eq!(parse_bind_ipv4("127.0.0.1").unwrap().to_string(), "127.0.0.1");
+        assert_eq!(
+            parse_bind_ipv4("127.0.0.1").unwrap().to_string(),
+            "127.0.0.1"
+        );
     }
 
     #[test]
