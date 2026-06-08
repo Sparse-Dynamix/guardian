@@ -1,26 +1,39 @@
 # Guardian
 
-Run any command and see its network traffic. Guardian intercepts HTTP, HTTPS, WebSocket, and secure WebSocket connections from the wrapped program, then streams each event as JSON on stderr. The child process keeps stdout clean for piping.
+Harden AI harnesses by filtering web traffic and tool-call payloads through a Trypanophobe-compatible endpoint.
+
+## Modes
+
+**MITM mode** — wrap a child process:
 
 ```bash
-guardian -- curl https://httpbin.org/get
-guardian -- sh -c 'curl https://httpbin.org/get'
+guardian --tpf http://filter.example/check -- opencode
+guardian -- curl https://httpbin.org/get   # passthrough when --tpf is omitted
 ```
+
+**Payload mode** — filter tool-call payloads:
+
+```bash
+guardian --tpf http://filter.example/check --payload '{"tool":"read_file"}'
+echo '{"tool":"read_file"}' | guardian --tpf http://filter.example/check
+```
+
+Without `--tpf`, MITM mode runs the child directly and payload mode echoes stdin/`--payload` to stdout.
 
 ## Quick start
 
-1. **Build or install** — see [AGENTS.md](AGENTS.md#build).
-2. **Optional — trust the Guardian CA system-wide** (improves HTTPS interception for browsers and apps that ignore injected env vars):
+1. **Build** — see [AGENTS.md](AGENTS.md#build).
+2. **Optional — trust the Guardian CA** (MITM mode with `--tpf` only):
 
    ```bash
-   sudo guardian install-system   # Linux/macOS; Administrator on Windows
-   guardian check-system          # verify without admin
+   sudo guardian install-system
+   guardian check-system
    ```
 
-3. **Run a command under interception:**
+3. **Run with filtering:**
 
    ```bash
-   guardian -- curl -s https://httpbin.org/get
+   guardian --tpf http://127.0.0.1:3000/pass -- curl -s https://httpbin.org/get
    ```
 
 Guardian stores its CA and config under `~/.guardian` by default.
@@ -28,52 +41,45 @@ Guardian stores its CA and config under `~/.guardian` by default.
 ## Usage
 
 ```text
-guardian [OPTIONS] -- <PROGRAM> [ARGS]...
-guardian install-system [--stores system,nss,java]
-guardian remove-system  [--stores system,nss,java]
-guardian check-system     [--stores system,nss,java]
+guardian [OPTIONS] -- <PROGRAM> [ARGS]...     # MITM mode
+guardian [OPTIONS] --payload <TEXT>           # payload mode
+echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--silent` | Suppress JSONL network logs on stderr |
-| `-p, --port` | Proxy listen port (default: auto free port in 1024–65535) |
-| `-b, --bind` | Proxy bind IPv4 address (default: `127.0.0.1`) |
+| `--tpf`, `--trypanophobe-filter` | Trypanophobe POST endpoint (`200` = safe, non-`200` = block) |
+| `--payload` | Explicit payload string (payload mode) |
+| `-p, --port` | Proxy listen port (MITM + `--tpf`; default: auto) |
+| `-b, --bind` | Proxy bind IPv4 (default: `127.0.0.1`) |
 | `--ca-dir` | Guardian data directory (default: `~/.guardian`) |
-| `--body-limit` | Max captured body/frame preview bytes in logs (default: 256) |
-| `--filter` | Connect-hook filter expression (platform default if unset) |
-| `--no-color` | Disable colored Guardian messages and JSONL on stderr |
+| `--filter` | Connect-hook filter expression |
+| `--no-color` | Disable colored stderr messages |
 | `-v` / `RUST_LOG` | Internal diagnostics on stderr |
-| `--config` | Path to an additional config file |
+| `--config` | Extra config file path |
 
-Configuration defaults ship in `config/guardian.toml`. Override in `~/.guardian/guardian.toml`, with `GUARDIAN_*` environment variables, or CLI flags. See [AGENTS.md](AGENTS.md#configuration-reference) for the full list.
+## Trypanophobe filter API (v1 PoC)
 
-## Capturing traffic
+`POST <tpf_url>` with JSON body:
 
-Network events are JSON Lines on stderr (one object per line). Child stdout is not used for logs:
-
-```bash
-guardian -- curl -s https://httpbin.org/get | jq .
-guardian -- curl -s https://httpbin.org/get 2> traffic.jsonl
+```json
+{
+  "kind": "http_response | ws_frame | tool_payload",
+  "payload": "<base64>",
+  "metadata": { }
+}
 ```
 
-Use `--silent` to run without network logging. Guardian-owned stderr lines are colorized by default (light blue JSONL, yellow warnings); pass `--no-color` to disable.
-
-On each run, Guardian prints a short notice that not all traffic may be captured, and suggests `install-system` when the CA is not yet trusted system-wide.
+- **HTTP 200** — content is safe; forwarded to the harness (or filter response body printed in payload mode).
+- **Non-200** — blocked; Guardian substitutes `Blocked by Guardian: content failed safety check` (configurable via `block_message`).
 
 ## System CA trust
 
 | Command | Admin required | Purpose |
 |---------|----------------|---------|
 | `install-system` | Yes | Register the Guardian CA in OS / browser / Java trust stores |
-| `remove-system` | Yes | Remove the Guardian CA from those stores |
-| `check-system` | No | Report whether the CA is already trusted |
-
-`install-system` and `remove-system` fail immediately with a clear message if not run with administrator privileges (`sudo` on Linux/macOS, elevated terminal on Windows).
-
-## Permissions
-
-Guardian needs permission to inject into the child process it spawns. Requirements vary by OS — see [AGENTS.md](AGENTS.md#permissions).
+| `remove-system` | Yes | Remove the Guardian CA |
+| `check-system` | No | Report whether the CA is trusted |
 
 ## License
 

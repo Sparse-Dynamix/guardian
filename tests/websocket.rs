@@ -2,7 +2,7 @@ mod common;
 
 use std::io::Read;
 
-use common::{guardian_bin, parse_jsonl, require_network};
+use common::{assert_child_success, assert_no_jsonl_stderr, guardian_bin, require_network};
 use tempfile::TempDir;
 
 fn ws_smoke_bin() -> std::path::PathBuf {
@@ -12,7 +12,7 @@ fn ws_smoke_bin() -> std::path::PathBuf {
 }
 
 #[test]
-fn wss_echo_logs_websocket_jsonl() {
+fn wss_echo_passthrough_runs_child() {
     if !require_network() {
         return;
     }
@@ -24,48 +24,32 @@ fn wss_echo_logs_websocket_jsonl() {
     );
 
     let ca_dir = TempDir::new().expect("ca dir");
-    let mut last_stderr = String::new();
-    for attempt in 0..3 {
-        let mut child = std::process::Command::new(guardian_bin());
-        child.args([
-            "--ca-dir",
-            ca_dir.path().to_str().unwrap(),
-            "--",
-            ws_bin.to_str().unwrap(),
-            "wss://echo.websocket.org/",
-        ]);
-        child.stdout(std::process::Stdio::piped());
-        child.stderr(std::process::Stdio::piped());
-        let mut process = child.spawn().expect("spawn guardian");
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut out) = process.stdout.take() {
-            out.read_to_string(&mut stdout).unwrap();
-        }
-        if let Some(mut err) = process.stderr.take() {
-            err.read_to_string(&mut stderr).unwrap();
-        }
-        let status = process.wait().unwrap();
-        last_stderr = stderr.clone();
-        if status.code() == Some(0) && !stdout.trim().is_empty() {
-            let jsonl = parse_jsonl(&stderr);
-            let types: Vec<_> = jsonl
-                .iter()
-                .filter_map(|v| v.get("type").and_then(|t| t.as_str()))
-                .collect();
-            assert!(
-                types.contains(&"websocket_connect"),
-                "expected websocket_connect JSONL; got {types:?}"
-            );
-            assert!(
-                types.contains(&"websocket_frame"),
-                "expected websocket_frame JSONL; got {types:?}"
-            );
-            return;
-        }
-        if attempt < 2 {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
+    let mut child = std::process::Command::new(guardian_bin());
+    child.args([
+        "--ca-dir",
+        ca_dir.path().to_str().unwrap(),
+        "--",
+        ws_bin.to_str().unwrap(),
+        "wss://echo.websocket.org/",
+    ]);
+    child.stdout(std::process::Stdio::piped());
+    child.stderr(std::process::Stdio::piped());
+    let mut process = child.spawn().expect("spawn guardian");
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = process.stdout.take() {
+        out.read_to_string(&mut stdout).unwrap();
     }
-    panic!("websocket smoke failed after retries; last stderr:\n{last_stderr}");
+    if let Some(mut err) = process.stderr.take() {
+        err.read_to_string(&mut stderr).unwrap();
+    }
+    let status = process.wait().unwrap();
+    let run = common::GuardianRun {
+        exit_code: status.code().unwrap_or(-1),
+        stdout,
+        stderr,
+        _ca_dir: ca_dir,
+    };
+    assert_child_success(&run);
+    assert_no_jsonl_stderr(&run);
 }

@@ -8,19 +8,22 @@ use serde::Deserialize;
 use crate::cli::{parse_bind_ipv4, Cli, SystemOpts};
 use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
 use crate::system_trust::default_trust_stores;
+use crate::trypanophobe::DEFAULT_BLOCK_MESSAGE;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FileSettings {
     pub bind: String,
     pub port: Option<u16>,
-    pub body_limit: usize,
+    pub trypanophobe_filter: Option<String>,
     pub filter: Option<String>,
     #[serde(default = "default_ignored_ports")]
     pub ignored_ports: Vec<u16>,
     pub ca_dir: String,
-    pub silent: bool,
     pub no_color: bool,
+    pub filter_timeout_secs: u64,
+    pub filter_body_limit: usize,
+    pub block_message: String,
     pub port_min: u16,
     pub port_max: u16,
     pub proxy_event_channel_capacity: usize,
@@ -42,12 +45,14 @@ impl Default for FileSettings {
         Self {
             bind: "127.0.0.1".to_string(),
             port: None,
-            body_limit: 256,
+            trypanophobe_filter: None,
             filter: None,
             ignored_ports: default_ignored_ports(),
             ca_dir: "~/.guardian".to_string(),
-            silent: false,
             no_color: false,
+            filter_timeout_secs: 10,
+            filter_body_limit: 1_048_576,
+            block_message: DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
             proxy_event_channel_capacity: 10_000,
@@ -70,11 +75,14 @@ impl Default for FileSettings {
 pub struct Settings {
     pub bind: Ipv4Addr,
     pub port: Option<u16>,
-    pub body_limit: usize,
+    pub trypanophobe_filter: Option<String>,
+    pub payload: Option<String>,
     pub filter: String,
     pub ca_dir: PathBuf,
-    pub silent: bool,
     pub no_color: bool,
+    pub filter_timeout_secs: u64,
+    pub filter_body_limit: usize,
+    pub block_message: String,
     pub port_min: u16,
     pub port_max: u16,
     pub proxy_event_channel_capacity: usize,
@@ -194,38 +202,30 @@ pub fn resolve_no_color(cli: &Cli) -> Result<bool> {
     Ok(cli.no_color || file.no_color)
 }
 
-pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
+fn merge_tpf(cli: &Cli, file: &FileSettings) -> Option<String> {
+    cli.trypanophobe_filter
+        .clone()
+        .or(file.trypanophobe_filter.clone())
+}
+
+pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
     let file = load_file_settings(cli.config.as_deref())?;
 
     let bind_str = cli.bind.as_deref().unwrap_or(&file.bind);
     let port = cli.port.or(file.port);
-    let body_limit = cli.body_limit.unwrap_or(file.body_limit);
+    let trypanophobe_filter = merge_tpf(cli, &file);
+    let ignored_ports = cli
+        .ignored_ports
+        .clone()
+        .filter(|ports| !ports.is_empty())
+        .unwrap_or_else(|| file.ignored_ports.clone());
     let filter = cli
         .filter
         .clone()
         .or(file.filter.clone())
-        .unwrap_or_else(|| {
-            let ports = cli
-                .ignored_ports
-                .as_ref()
-                .filter(|ports| !ports.is_empty())
-                .cloned()
-                .unwrap_or(file.ignored_ports);
-            connect_filter_from_ports(&ports)
-        });
+        .unwrap_or_else(|| connect_filter_from_ports(&ignored_ports));
     let ca_dir = resolve_ca_dir(cli)?;
-    let silent = cli.silent || file.silent;
     let no_color = cli.no_color || file.no_color;
-
-    let program_raw = cli
-        .program
-        .first()
-        .cloned()
-        .context("program is required after --")?;
-    let program = resolve_program(&program_raw)?
-        .to_string_lossy()
-        .into_owned();
-    let args = cli.program.iter().skip(1).cloned().collect();
 
     let trust_stores = file
         .trust_stores
@@ -235,11 +235,14 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     Ok(Settings {
         bind: parse_bind_ipv4(bind_str)?,
         port,
-        body_limit,
+        trypanophobe_filter,
+        payload: cli.payload.clone(),
         filter,
         ca_dir,
-        silent,
         no_color,
+        filter_timeout_secs: file.filter_timeout_secs,
+        filter_body_limit: file.filter_body_limit,
+        block_message: file.block_message.clone(),
         port_min: file.port_min,
         port_max: file.port_max,
         proxy_event_channel_capacity: file.proxy_event_channel_capacity,
@@ -253,10 +256,37 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         node_options_append: file.node_options_append,
         tracing_prefix: file.tracing_prefix,
         tracing_default_level: file.tracing_default_level,
-        program,
-        args,
+        program: String::new(),
+        args: vec![],
         trust_stores,
     })
+}
+
+pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
+    let mut settings = resolve_payload_settings(cli)?;
+
+    let program_raw = cli
+        .program
+        .first()
+        .cloned()
+        .context("program is required after --")?;
+    let program = resolve_program(&program_raw)?
+        .to_string_lossy()
+        .into_owned();
+    let args = cli.program.iter().skip(1).cloned().collect();
+
+    settings.program = program;
+    settings.args = args;
+    Ok(settings)
+}
+
+pub fn is_payload_mode(cli: &Cli) -> bool {
+    cli.payload.is_some() || (is_stdin_piped() && cli.program.is_empty())
+}
+
+pub fn is_stdin_piped() -> bool {
+    use std::io::IsTerminal;
+    !std::io::stdin().is_terminal()
 }
 
 #[cfg(test)]
@@ -297,15 +327,13 @@ mod tests {
         let cfg_path = dir.path().join("guardian.toml");
         let mut f = fs::File::create(&cfg_path).unwrap();
         writeln!(f, "bind = \"127.0.0.1\"").unwrap();
-        writeln!(f, "body_limit = 128").unwrap();
+        writeln!(f, "filter_body_limit = 128").unwrap();
         writeln!(f, "port = 9000").unwrap();
 
         let mut argv = vec![
             "guardian",
             "--config",
             cfg_path.to_str().unwrap(),
-            "--body-limit",
-            "512",
             "--",
             test_echo_program(),
         ];
@@ -313,7 +341,7 @@ mod tests {
         let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
-        assert_eq!(settings.body_limit, 512);
+        assert_eq!(settings.filter_body_limit, 128);
         assert_eq!(settings.port, Some(9000));
         assert_eq!(
             settings.program,
@@ -456,5 +484,22 @@ mod tests {
         let cli = Cli::try_parse_from(argv).unwrap();
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.no_color);
+    }
+
+    #[test]
+    fn tpf_from_cli() {
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--tpf",
+            "http://127.0.0.1:1/pass",
+            "--payload",
+            "x",
+        ])
+        .unwrap();
+        let settings = resolve_payload_settings(&cli).unwrap();
+        assert_eq!(
+            settings.trypanophobe_filter.as_deref(),
+            Some("http://127.0.0.1:1/pass")
+        );
     }
 }

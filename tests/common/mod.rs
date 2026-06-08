@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use serde_json::Value;
 use tempfile::TempDir;
 
 const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
@@ -15,7 +14,6 @@ pub struct GuardianRun {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
-    pub jsonl: Vec<Value>,
     #[allow(dead_code)]
     pub _ca_dir: TempDir,
 }
@@ -188,19 +186,16 @@ pub fn run_guardian_echo_env_var(
         err.read_to_string(&mut stderr)?;
     }
     let status = process.wait()?;
-    let jsonl = parse_jsonl(&stderr);
     Ok(GuardianRun {
         exit_code: status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
         stderr,
-        jsonl,
         _ca_dir: ca_dir,
     })
 }
 
-pub fn run_guardian_direct_https(silent: bool) -> std::io::Result<GuardianRun> {
+pub fn run_guardian_direct_https() -> std::io::Result<GuardianRun> {
     run_guardian_with_options(GuardianOptions {
-        silent,
         url: Some(smoke_https_url()),
         ..GuardianOptions::default()
     })
@@ -208,23 +203,21 @@ pub fn run_guardian_direct_https(silent: bool) -> std::io::Result<GuardianRun> {
 
 #[derive(Clone)]
 pub struct GuardianOptions {
-    pub silent: bool,
     pub verbose: bool,
     pub port: Option<u16>,
-    pub body_limit: Option<usize>,
     pub url: Option<String>,
     pub config: Option<PathBuf>,
+    pub trypanophobe_filter: Option<String>,
 }
 
 impl Default for GuardianOptions {
     fn default() -> Self {
         Self {
-            silent: false,
             verbose: false,
             port: None,
-            body_limit: None,
             url: None,
             config: None,
+            trypanophobe_filter: None,
         }
     }
 }
@@ -232,16 +225,13 @@ impl Default for GuardianOptions {
 pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<GuardianRun> {
     run_guardian_http_with_retry(
         || run_guardian_with_options_once(&opts),
-        |run| child_stdout_ok(run) && (opts.silent || has_http_jsonl(run)),
+        |run| child_stdout_ok(run),
     )
 }
 
 fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
     let url = opts.url.clone().unwrap_or_else(smoke_url);
     let mut args = Vec::new();
-    if opts.silent {
-        args.push("--silent".to_string());
-    }
     if opts.verbose {
         args.push("-v".to_string());
     }
@@ -249,13 +239,13 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
         args.push("--port".to_string());
         args.push(port.to_string());
     }
-    if let Some(limit) = opts.body_limit {
-        args.push("--body-limit".to_string());
-        args.push(limit.to_string());
-    }
     if let Some(config) = &opts.config {
         args.push("--config".to_string());
         args.push(config.display().to_string());
+    }
+    if let Some(tpf) = &opts.trypanophobe_filter {
+        args.push("--tpf".to_string());
+        args.push(tpf.clone());
     }
     args.push("--ca-dir".to_string());
     let ca_dir = TempDir::new()?;
@@ -270,19 +260,16 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
     run_guardian_with_args(&args, ca_dir, &extra_env)
 }
 
-pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
+pub fn run_guardian_child_spawn() -> std::io::Result<GuardianRun> {
     run_guardian_http_with_retry(
-        || run_guardian_child_spawn_once(silent),
-        |run| child_stdout_ok(run) && (silent || has_http_jsonl(run)),
+        || run_guardian_child_spawn_once(),
+        |run| child_stdout_ok(run),
     )
 }
 
-fn run_guardian_child_spawn_once(silent: bool) -> std::io::Result<GuardianRun> {
+fn run_guardian_child_spawn_once() -> std::io::Result<GuardianRun> {
     let url = smoke_url();
     let mut args = Vec::new();
-    if silent {
-        args.push("--silent".to_string());
-    }
     args.push("--ca-dir".to_string());
     let ca_dir = TempDir::new()?;
     args.push(ca_dir.path().display().to_string());
@@ -308,6 +295,56 @@ fn run_guardian_child_spawn_once(silent: bool) -> std::io::Result<GuardianRun> {
     }
 
     run_guardian_with_args(&args, ca_dir, &[])
+}
+
+pub fn run_guardian_payload(args: &[&str], stdin: Option<&[u8]>) -> std::io::Result<GuardianRun> {
+    let ca_dir = TempDir::new()?;
+    let bin = guardian_bin();
+    let mut child = Command::new(&bin);
+    child.args(args);
+    if let Some(input) = stdin {
+        child.stdin(Stdio::piped());
+        child.stdout(Stdio::piped());
+        child.stderr(Stdio::piped());
+        let mut process = child.spawn()?;
+        if let Some(mut stdin_pipe) = process.stdin.take() {
+            use std::io::Write;
+            stdin_pipe.write_all(input)?;
+        }
+        let mut stdout_bytes = Vec::new();
+        let mut stderr = String::new();
+        if let Some(mut out) = process.stdout.take() {
+            out.read_to_end(&mut stdout_bytes)?;
+        }
+        if let Some(mut err) = process.stderr.take() {
+            err.read_to_string(&mut stderr)?;
+        }
+        let status = process.wait()?;
+        return Ok(GuardianRun {
+            exit_code: status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+            stderr,
+            _ca_dir: ca_dir,
+        });
+    }
+    child.stdout(Stdio::piped());
+    child.stderr(Stdio::piped());
+    let mut process = child.spawn()?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = process.stdout.take() {
+        out.read_to_end(&mut stdout_bytes)?;
+    }
+    if let Some(mut err) = process.stderr.take() {
+        err.read_to_string(&mut stderr)?;
+    }
+    let status = process.wait()?;
+    Ok(GuardianRun {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr,
+        _ca_dir: ca_dir,
+    })
 }
 
 fn run_guardian_with_args(
@@ -344,13 +381,11 @@ fn run_guardian_with_args(
 
     let status = process.wait()?;
     let exit_code = status.code().unwrap_or(-1);
-    let jsonl = parse_jsonl(&stderr);
 
     Ok(GuardianRun {
         exit_code,
         stdout,
         stderr,
-        jsonl,
         _ca_dir: ca_dir,
     })
 }
@@ -379,35 +414,11 @@ where
     Ok(last.expect("guardian run"))
 }
 
-fn has_http_jsonl(run: &GuardianRun) -> bool {
-    run.jsonl
-        .iter()
-        .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("http"))
-}
-
 fn child_stdout_ok(run: &GuardianRun) -> bool {
     run.exit_code == 0 && !run.stdout.trim().is_empty()
 }
 
-pub fn parse_jsonl(stderr: &str) -> Vec<Value> {
-    stderr
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with('{') {
-                serde_json::from_str(trimmed).ok()
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub fn assert_http_jsonl(run: &GuardianRun) {
-    assert_http_jsonl_for_url(run, &smoke_url());
-}
-
-pub fn assert_http_jsonl_for_url(run: &GuardianRun, url: &str) {
+pub fn assert_child_success(run: &GuardianRun) {
     assert_eq!(
         run.exit_code, 0,
         "guardian exited with {}; stderr:\n{}",
@@ -418,36 +429,17 @@ pub fn assert_http_jsonl_for_url(run: &GuardianRun, url: &str) {
         "expected non-empty child stdout; stderr:\n{}",
         run.stderr
     );
-    let http_events: Vec<_> = run
-        .jsonl
-        .iter()
-        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("http"))
-        .collect();
-    assert!(
-        !http_events.is_empty(),
-        "expected at least one http JSONL event; stderr:\n{}",
-        run.stderr
-    );
-    let host = url_host(url);
-    let matched = http_events.iter().any(|ev| {
-        ev.get("request")
-            .and_then(|r| r.get("uri"))
-            .and_then(|u| u.as_str())
-            .is_some_and(|uri| uri.contains(&host))
-    });
-    assert!(
-        matched,
-        "expected request.uri to reference {host}; events: {http_events:?}"
-    );
 }
 
-pub fn url_host(url: &str) -> String {
-    url.trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or("httpbin.org")
-        .to_string()
+pub fn assert_no_jsonl_stderr(run: &GuardianRun) {
+    assert!(
+        !run.stderr.lines().any(|line| {
+            let t = line.trim();
+            t.starts_with('{') && t.contains("\"type\"")
+        }),
+        "expected no JSONL on stderr; got:\n{}",
+        run.stderr
+    );
 }
 
 /// Integration tests need network; skip quickly when offline.

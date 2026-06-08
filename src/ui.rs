@@ -50,14 +50,6 @@ impl Ui {
         let _ = self.write_line(msg, |s| s.green());
     }
 
-    pub fn jsonl_line(&self, line: &str) -> String {
-        if self.color {
-            line.truecolor(102, 204, 255).to_string()
-        } else {
-            line.to_string()
-        }
-    }
-
     fn write_line<F>(&self, msg: &str, colorize: F) -> io::Result<()>
     where
         F: FnOnce(&str) -> ColoredString,
@@ -82,11 +74,14 @@ mod tests {
         Settings {
             bind: "127.0.0.1".parse().unwrap(),
             port: None,
-            body_limit: 256,
+            trypanophobe_filter: None,
+            payload: None,
             filter: String::new(),
             ca_dir: PathBuf::from("/tmp/guardian-test"),
-            silent: false,
             no_color,
+            filter_timeout_secs: 10,
+            filter_body_limit: 1_048_576,
+            block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
             proxy_event_channel_capacity: 10_000,
@@ -104,21 +99,6 @@ mod tests {
             args: vec![],
             trust_stores: vec!["system".into(), "nss".into(), "java".into()],
         }
-    }
-
-    #[test]
-    fn jsonl_line_no_color_is_plain() {
-        let ui = Ui::from_settings(&test_settings(true));
-        assert_eq!(ui.jsonl_line(r#"{"type":"http"}"#), r#"{"type":"http"}"#);
-    }
-
-    #[test]
-    fn jsonl_line_with_color_has_ansi() {
-        control::set_override(true);
-        let ui = Ui::new(false);
-        let line = ui.jsonl_line("{}");
-        assert!(line.contains('\x1b'), "expected ANSI escapes");
-        control::unset_override();
     }
 
     #[test]

@@ -5,17 +5,17 @@ mod filter;
 mod frida_ext;
 mod injector;
 mod install;
-mod jsonl;
 mod mkcert;
 mod port;
 mod proxy;
 mod signals;
 mod system_trust;
+mod trypanophobe;
 mod ui;
 
 use std::io::Write;
 use std::net::IpAddr;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,16 +23,17 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use proxyapi::ca::Ssl;
-use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use crate::ca::CaTrust;
 use crate::cli::{Cli, Commands};
 use crate::config::{
-    resolve_ca_dir, resolve_no_color, resolve_settings, resolve_trust_stores, Settings,
+    is_payload_mode, resolve_ca_dir, resolve_no_color, resolve_payload_settings, resolve_settings,
+    resolve_trust_stores, Settings,
 };
 use crate::injector::SpawnOutcome;
 use crate::system_trust::TrustStore;
+use crate::trypanophobe::run_payload;
 use crate::ui::Ui;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -129,7 +130,18 @@ fn print_run_warnings(settings: &Settings, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-async fn run(settings: Settings, ui: &Ui) -> Result<i32> {
+fn run_mitm_passthrough(settings: &Settings) -> Result<i32> {
+    let status = Command::new(&settings.program)
+        .args(&settings.args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to spawn {}", settings.program))?;
+    Ok(normalize_exit_code(status.code().unwrap_or(-1)))
+}
+
+async fn run_mitm_filtered(settings: Settings, ui: &Ui) -> Result<i32> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     print_run_warnings(&settings, ui)?;
@@ -184,19 +196,6 @@ async fn run(settings: Settings, ui: &Ui) -> Result<i32> {
         .send(())
         .context("failed to signal proxy ready to injector")?;
 
-    let cancel = CancellationToken::new();
-    let jsonl_cancel = cancel.clone();
-    let silent = settings.silent;
-    let body_limit = settings.body_limit;
-    let no_color = settings.no_color;
-    let event_rx = proxy_handle.event_rx;
-
-    let jsonl_task = tokio::spawn(async move {
-        let result = jsonl::run_sink(event_rx, silent, body_limit, no_color).await;
-        jsonl_cancel.cancel();
-        result
-    });
-
     let proxy_cancel = proxy_handle.cancel.clone();
     let mut injection = injection;
 
@@ -206,7 +205,6 @@ async fn run(settings: Settings, ui: &Ui) -> Result<i32> {
             res?;
             let _ = interrupt_tx.send(());
             proxy_cancel.cancel();
-            cancel.cancel();
             match tokio::time::timeout(SHUTDOWN_GRACE, &mut injection).await {
                 Ok(Ok(Ok(outcome))) => outcome,
                 _ => SpawnOutcome { exit_code: 130 },
@@ -216,10 +214,16 @@ async fn run(settings: Settings, ui: &Ui) -> Result<i32> {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     proxy_handle.cancel.cancel();
-    cancel.cancel();
-    jsonl_task.await.context("jsonl task join failed")??;
 
     Ok(normalize_exit_code(outcome.exit_code))
+}
+
+async fn run_mitm(settings: Settings, ui: &Ui) -> Result<i32> {
+    if settings.trypanophobe_filter.is_none() {
+        run_mitm_passthrough(&settings)
+    } else {
+        run_mitm_filtered(settings, ui).await
+    }
 }
 
 fn exit_code_from_run(result: Result<i32>) -> ExitCode {
@@ -297,13 +301,22 @@ async fn async_main() -> Result<i32> {
             }
         }
         None => {
-            if cli.program.is_empty() {
-                bail!("program is required after -- (or use a subcommand such as install-system)");
+            if is_payload_mode(&cli) {
+                let settings = resolve_payload_settings(&cli)?;
+                init_tracing(cli.verbose, &settings);
+                return run_payload(&settings).await;
             }
+
+            if cli.program.is_empty() {
+                bail!(
+                    "program is required after --, or use --payload / pipe stdin for payload mode"
+                );
+            }
+
             let settings = resolve_settings(&cli)?;
             let ui = Ui::from_settings(&settings);
             init_tracing(cli.verbose, &settings);
-            run(settings, &ui).await
+            run_mitm(settings, &ui).await
         }
     }
 }
@@ -312,11 +325,14 @@ fn minimal_settings(ca_dir: std::path::PathBuf) -> Settings {
     Settings {
         bind: "127.0.0.1".parse().unwrap(),
         port: None,
-        body_limit: 256,
+        trypanophobe_filter: None,
+        payload: None,
         filter: String::new(),
         ca_dir,
-        silent: false,
         no_color: false,
+        filter_timeout_secs: 10,
+        filter_body_limit: 1_048_576,
+        block_message: trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
         port_min: 1024,
         port_max: 65535,
         proxy_event_channel_capacity: 10_000,

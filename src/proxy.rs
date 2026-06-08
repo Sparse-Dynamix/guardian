@@ -1,32 +1,37 @@
 use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use proxyapi::event::ProxyEvent;
+use proxyapi::content_filter::ContentFilter;
 use proxyapi::{Proxy, ProxyConfig, ProxyMode};
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Settings;
+use crate::trypanophobe::TrypanophobeClient;
 
 pub struct ProxyHandle {
-    pub event_rx: mpsc::Receiver<ProxyEvent>,
     pub cancel: CancellationToken,
 }
 
 pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<ProxyHandle> {
-    let (event_tx, event_rx) = mpsc::channel(settings.proxy_event_channel_capacity);
     let cancel = CancellationToken::new();
+
+    let content_filter: Option<Arc<dyn ContentFilter>> = if settings.trypanophobe_filter.is_some() {
+        Some(Arc::new(TrypanophobeClient::from_settings(settings)?) as Arc<dyn ContentFilter>)
+    } else {
+        None
+    };
 
     let proxy_config = ProxyConfig {
         addr: SocketAddr::new(bind_ip, port),
         mode: ProxyMode::Forward,
-        event_tx,
+        event_tx: None,
+        content_filter,
         ca_dir: settings.ca_dir.clone(),
         upstream_tls: Default::default(),
         intercept: None,
-        // Capture more than the JSONL preview cap so `body_truncated` reflects the full body size.
-        body_capture_limit: Some(settings.body_limit.saturating_mul(8).max(512)),
+        body_capture_limit: Some(settings.filter_body_limit),
         replay_rx: None,
     };
 
@@ -43,7 +48,7 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
         }
     });
 
-    Ok(ProxyHandle { event_rx, cancel })
+    Ok(ProxyHandle { cancel })
 }
 
 async fn wait_for_listener(

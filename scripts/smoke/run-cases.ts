@@ -6,7 +6,7 @@ import { smokeCases } from "./cases.ts";
 import type { SmokeCase } from "./cases.ts";
 import {
   assertExit,
-  assertStderrJsonlType,
+  assertNoJsonlOnStderr,
   assertStdoutNonempty,
 } from "./assert.ts";
 import { assertGuardianBuilt, platformConfig } from "./platform.ts";
@@ -69,21 +69,23 @@ function curlArgs(url: string): string[] {
   return args;
 }
 
-function runDirect(silent: boolean, url: string): RunResult {
+function runDirect(url: string): RunResult {
   const config = platformConfig();
   const caDir = makeCaDir();
-  const guardianArgs: string[] = [];
-  if (silent) guardianArgs.push("--silent");
-  guardianArgs.push("--ca-dir", caDir, "--", config.curl, ...curlArgs(url));
+  const guardianArgs: string[] = [
+    "--ca-dir",
+    caDir,
+    "--",
+    config.curl,
+    ...curlArgs(url),
+  ];
   return runGuardian(guardianArgs);
 }
 
-function runChild(silent: boolean, url: string): RunResult {
+function runChild(url: string): RunResult {
   const config = platformConfig();
   const caDir = makeCaDir();
-  const guardianArgs: string[] = [];
-  if (silent) guardianArgs.push("--silent");
-  guardianArgs.push("--ca-dir", caDir, "--");
+  const guardianArgs: string[] = ["--ca-dir", caDir, "--"];
 
   if (config.childWrapper) {
     guardianArgs.push(config.childWrapper, config.curl, ...curlArgs(url));
@@ -104,17 +106,14 @@ function runCase(c: SmokeCase, url: string): void {
   console.log(`==> smoke case: ${c.name}`);
   let lastError: unknown;
   for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
-    const result =
-      c.command === "direct"
-        ? runDirect(c.silent, url)
-        : runChild(c.silent, url);
+    const result = c.command === "direct" ? runDirect(url) : runChild(url);
 
     try {
       assertExit(c.expectExit, result.exitCode);
       if (c.expectStdoutNonempty) {
         assertStdoutNonempty(result.stdoutFile);
       }
-      assertStderrJsonlType(result.stderrFile, c.expectJsonlType);
+      assertNoJsonlOnStderr(result.stderrFile);
       fs.rmSync(path.dirname(result.stdoutFile), {
         recursive: true,
         force: true,

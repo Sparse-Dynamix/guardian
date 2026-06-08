@@ -8,14 +8,18 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "guardian",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Intercept and log HTTP/S and WebSocket traffic for any command",
+    about = "Harden AI harnesses by filtering web traffic and tool-call payloads",
     trailing_var_arg = true,
     allow_hyphen_values = true
 )]
 pub struct Cli {
-    /// Suppress JSONL network log lines on stderr.
+    /// Trypanophobe filter endpoint URL (POST JSON, 200 = safe).
+    #[arg(long = "trypanophobe-filter", alias = "tpf", global = true)]
+    pub trypanophobe_filter: Option<String>,
+
+    /// Tool-call payload for payload-only mode (omit to read stdin).
     #[arg(long, global = true)]
-    pub silent: bool,
+    pub payload: Option<String>,
 
     /// Proxy listen port (overrides auto allocation).
     #[arg(short = 'p', long, global = true)]
@@ -28,10 +32,6 @@ pub struct Cli {
     /// Guardian data directory (CA certificates and config).
     #[arg(long, global = true)]
     pub ca_dir: Option<PathBuf>,
-
-    /// Max request/response/WS frame bytes captured in JSONL previews.
-    #[arg(long, global = true)]
-    pub body_limit: Option<usize>,
 
     /// JS expression for connect() filter (sa_family, addr, port).
     #[arg(long, global = true)]
@@ -49,14 +49,14 @@ pub struct Cli {
     #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
 
-    /// Disable colored stderr output for Guardian messages and JSONL.
+    /// Disable colored stderr output for Guardian messages.
     #[arg(long, global = true)]
     pub no_color: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Subcommand program and arguments (run mode; use after `--`).
+    /// Subcommand program and arguments (MITM mode; use after `--`).
     #[arg(required = false)]
     pub program: Vec<String>,
 }
@@ -136,5 +136,22 @@ mod tests {
             }
             _ => panic!("expected check-system"),
         }
+    }
+
+    #[test]
+    fn tpf_alias_parses() {
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--tpf",
+            "http://127.0.0.1:9999/pass",
+            "--payload",
+            "hello",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.trypanophobe_filter.as_deref(),
+            Some("http://127.0.0.1:9999/pass")
+        );
+        assert_eq!(cli.payload.as_deref(), Some("hello"));
     }
 }

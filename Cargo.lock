@@ -865,6 +865,7 @@ name = "guardian"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "bytes",
  "clap",
@@ -882,6 +883,7 @@ dependencies = [
  "privilege",
  "proxyapi",
  "proxyapi_models",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "serde",

@@ -1,8 +1,526 @@
+diff --git a/src/ca/mod.rs b/src/ca/mod.rs
+index 4d4e883..690870d 100644
+--- a/src/ca/mod.rs
++++ b/src/ca/mod.rs
+@@ -51,8 +51,8 @@ impl Ssl {
+     pub fn load_or_generate(dir: &Path) -> Result<Self, crate::error::Error> {
+         std::fs::create_dir_all(dir)?;
+ 
+-        let cert_path = dir.join("proxelar-ca.pem");
+-        let key_path = dir.join("proxelar-ca.key");
++        let cert_path = dir.join("rootCA.pem");
++        let key_path = dir.join("rootCA-key.pem");
+ 
+         let (pkey, ca_cert) = if cert_path.exists() && key_path.exists() {
+             tracing::info!("Loading CA certificate from {}", dir.display());
+diff --git a/src/content_filter.rs b/src/content_filter.rs
+new file mode 100644
+index 0000000..10dc8d5
+--- /dev/null
++++ b/src/content_filter.rs
+@@ -0,0 +1,34 @@
++//! Optional response/frame filtering hook for MITM proxies.
++
++use async_trait::async_trait;
++use bytes::Bytes;
++
++/// Context for filtering an HTTP response before it reaches the client.
++pub struct HttpFilterContext<'a> {
++    pub method: &'a str,
++    pub url: &'a str,
++    pub status: u16,
++    pub scheme: &'a str,
++    pub body: &'a [u8],
++}
++
++/// Context for filtering a WebSocket frame before it reaches the client.
++pub struct WsFilterContext<'a> {
++    pub direction: &'a str,
++    pub opcode: &'a str,
++    pub payload: &'a [u8],
++}
++
++/// Result of a content safety check.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum FilterVerdict {
++    Allow,
++    Block { message: Bytes },
++}
++
++/// Async hook invoked after upstream content is captured and before the client sees it.
++#[async_trait]
++pub trait ContentFilter: Send + Sync {
++    async fn check_http_response(&self, ctx: HttpFilterContext<'_>) -> FilterVerdict;
++    async fn check_ws_frame(&self, ctx: WsFilterContext<'_>) -> FilterVerdict;
++}
+diff --git a/src/handler.rs b/src/handler.rs
+index f73ac81..cc90bee 100644
+--- a/src/handler.rs
++++ b/src/handler.rs
+@@ -8,6 +8,7 @@ use std::sync::Arc;
+ use tokio::sync::{mpsc, Notify};
+ 
+ use crate::body::{self, BodyCapture, BodySnapshot, ProxyBody};
++use crate::content_filter::{ContentFilter, FilterVerdict, HttpFilterContext};
+ use crate::event::{next_id, ProxyEvent};
+ use crate::intercept::{InterceptConfig, InterceptDecision};
+ use crate::{HttpContext, HttpHandler, RequestOrResponse};
+@@ -126,7 +127,6 @@ impl CapturedRequest {
+         }
+     }
+ 
+-    #[cfg(feature = "scripting")]
+     fn request_line(&self) -> (String, String) {
+         match self {
+             Self::Buffered(request) => (
+@@ -148,7 +148,10 @@ fn log_truncated_capture(kind: &str, snapshot: &BodySnapshot) {
+     }
+ }
+ 
+-fn try_send_event(tx: &mpsc::Sender<ProxyEvent>, event: ProxyEvent) {
++fn try_send_event(tx: &Option<mpsc::Sender<ProxyEvent>>, event: ProxyEvent) {
++    let Some(tx) = tx else {
++        return;
++    };
+     match tx.try_send(event) {
+         Ok(()) => {}
+         Err(mpsc::error::TrySendError::Full(_)) => {
+@@ -161,7 +164,7 @@ fn try_send_event(tx: &mpsc::Sender<ProxyEvent>, event: ProxyEvent) {
+ }
+ 
+ fn send_request_complete(
+-    tx: &mpsc::Sender<ProxyEvent>,
++    tx: &Option<mpsc::Sender<ProxyEvent>>,
+     id: u64,
+     request: ProxiedRequest,
+     response: ProxiedResponse,
+@@ -273,7 +276,8 @@ where
+ /// Lua `on_request` / `on_response` hooks are called for every request/response.
+ #[derive(Clone)]
+ pub struct CapturingHandler {
+-    event_tx: mpsc::Sender<ProxyEvent>,
++    event_tx: Option<mpsc::Sender<ProxyEvent>>,
++    content_filter: Option<Arc<dyn ContentFilter>>,
+     captured_request: Option<CapturedRequest>,
+     /// ID assigned at the start of `handle_request` so that related events
+     /// share the same ID and the UI can correlate them.
+@@ -298,13 +302,14 @@ impl std::fmt::Debug for CapturingHandler {
+ impl CapturingHandler {
+     /// Create a new handler that sends events to the given channel.
+     #[must_use]
+-    pub fn new(event_tx: mpsc::Sender<ProxyEvent>) -> Self {
++    pub fn new(event_tx: Option<mpsc::Sender<ProxyEvent>>) -> Self {
+         Self {
+             event_tx,
+             captured_request: None,
+             pending_id: None,
+             intercept: None,
+             body_capture_limit: DEFAULT_BODY_CAPTURE_LIMIT,
++            content_filter: None,
+             #[cfg(feature = "scripting")]
+             script_engine: None,
+         }
+@@ -335,6 +340,13 @@ impl CapturingHandler {
+         self
+     }
+ 
++    /// Attach a content filter that can block responses before they reach the client.
++    #[must_use]
++    pub fn with_content_filter(mut self, filter: Arc<dyn ContentFilter>) -> Self {
++        self.content_filter = Some(filter);
++        self
++    }
++
+     pub(crate) fn take_captured_request(&mut self) -> Option<ProxiedRequest> {
+         self.take_captured_request_state()
+             .map(CapturedRequest::into_proxied_request)
+@@ -345,6 +357,10 @@ impl CapturingHandler {
+     }
+ 
+     fn should_buffer_response(&self) -> bool {
++        if self.content_filter.is_some() {
++            return true;
++        }
++
+         #[cfg(feature = "scripting")]
+         if self.script_engine.is_some() {
+             return true;
+@@ -373,10 +389,14 @@ impl CapturingHandler {
+     }
+ 
+     /// Clone the event sender for use in long-lived spawned tasks (e.g. WS frame pump).
+-    pub(crate) fn event_tx_clone(&self) -> mpsc::Sender<ProxyEvent> {
++    pub(crate) fn event_tx_clone(&self) -> Option<mpsc::Sender<ProxyEvent>> {
+         self.event_tx.clone()
+     }
+ 
++    pub(crate) fn content_filter_clone(&self) -> Option<Arc<dyn ContentFilter>> {
++        self.content_filter.clone()
++    }
++
+     /// Run intercept logic for a replayed request and return it ready to forward.
+     ///
+     /// Unlike [`HttpHandler::handle_request`], this takes an already-captured
+@@ -414,11 +434,14 @@ impl CapturingHandler {
+                 let rx = cfg.register(id);
+                 if self
+                     .event_tx
+-                    .try_send(ProxyEvent::RequestIntercepted {
+-                        id,
+-                        request: Box::new(snapshot),
++                    .as_ref()
++                    .is_none_or(|tx| {
++                        tx.try_send(ProxyEvent::RequestIntercepted {
++                            id,
++                            request: Box::new(snapshot),
++                        })
++                        .is_err()
+                     })
+-                    .is_err()
+                 {
+                     cfg.resolve(id, InterceptDecision::Forward);
+                     tracing::warn!("Event channel full, skipping intercept for replay id={id}");
+@@ -515,10 +538,10 @@ impl CapturingHandler {
+ 
+         match collect_body(body, self.body_capture_limit, "response").await {
+             BodyCollection::Complete(body_bytes) => {
+-                self.finish_buffered_response(parts, body_bytes)
++                self.finish_buffered_response(parts, body_bytes).await
+             }
+             BodyCollection::Exceeded { captured, body } => {
+-                self.finish_limited_response(parts, captured, body)
++                self.finish_limited_response(parts, captured, body).await
+             }
+         }
+     }
+@@ -536,11 +559,12 @@ impl CapturingHandler {
+         }
+     }
+ 
+-    fn finish_buffered_response(
++    async fn finish_buffered_response(
+         &mut self,
+         parts: http::response::Parts,
+         body_bytes: Bytes,
+     ) -> Response<ProxyBody> {
++        let (parts, body_bytes) = self.apply_content_filter(parts, body_bytes).await;
+         let hooked = self.apply_response_hook_to_snapshot(parts, body_bytes);
+         let HookedResponse { parts, body } = hooked;
+         let body_bytes = body.into_bytes();
+@@ -549,12 +573,13 @@ impl CapturingHandler {
+         Response::from_parts(parts, body::full(body_bytes))
+     }
+ 
+-    fn finish_limited_response(
++    async fn finish_limited_response(
+         &mut self,
+         parts: http::response::Parts,
+         captured: Bytes,
+         body: ProxyBody,
+     ) -> Response<ProxyBody> {
++        let (parts, captured) = self.apply_content_filter(parts, captured).await;
+         let hooked = self.apply_response_hook_to_snapshot(parts, captured);
+         if hooked.body.is_original() {
+             self.stream_response(hooked.parts, body)
+@@ -566,6 +591,44 @@ impl CapturingHandler {
+         }
+     }
+ 
++    async fn apply_content_filter(
++        &self,
++        mut parts: http::response::Parts,
++        body: Bytes,
++    ) -> (http::response::Parts, Bytes) {
++        let Some(filter) = self.content_filter.as_ref() else {
++            return (parts, body);
++        };
++
++        let (method, url) = self
++            .captured_request
++            .as_ref()
++            .map(CapturedRequest::request_line)
++            .unwrap_or_default();
++        let scheme = if url.starts_with("https://") {
++            "https"
++        } else {
++            "http"
++        };
++
++        let ctx = HttpFilterContext {
++            method: &method,
++            url: &url,
++            status: parts.status.as_u16(),
++            scheme,
++            body: &body,
++        };
++
++        match filter.check_http_response(ctx).await {
++            FilterVerdict::Allow => (parts, body),
++            FilterVerdict::Block { message } => {
++                parts.status = http::StatusCode::FORBIDDEN;
++                parts.headers = http::HeaderMap::new();
++                (parts, message)
++            }
++        }
++    }
++
+     fn emit_captured_response(&mut self, parts: http::response::Parts, body_bytes: Bytes) {
+         let hooked = self.apply_response_hook_to_snapshot(parts, body_bytes);
+         let HookedResponse { parts, body } = hooked;
+@@ -845,7 +908,11 @@ impl HttpHandler for CapturingHandler {
+                 };
+                 // Non-blocking send: if the channel is full, skip interception
+                 // and fall through to normal forwarding so the request isn't lost.
+-                if self.event_tx.try_send(event).is_err() {
++                if self
++                    .event_tx
++                    .as_ref()
++                    .is_none_or(|tx| tx.try_send(event).is_err())
++                {
+                     cfg.resolve(id, InterceptDecision::Forward);
+                     tracing::warn!("Event channel full, skipping intercept for id={id}");
+                 } else {
+@@ -938,7 +1005,7 @@ mod tests {
+     #[test]
+     fn debug_does_not_expose_large_captured_request() {
+         let (event_tx, _event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+         let debug = format!("{handler:?}");
+@@ -955,7 +1022,7 @@ mod tests {
+     #[tokio::test]
+     async fn finish_buffered_response_uses_pending_id_and_rebuilds_response_body() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(77);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+@@ -967,7 +1034,7 @@ mod tests {
+             .into_parts();
+         parts.version = Version::HTTP_11;
+ 
+-        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"accepted"));
++        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"accepted")).await;
+ 
+         assert_eq!(body_bytes(response).await.as_ref(), b"accepted");
+         match event_rx.recv().await.unwrap() {
+@@ -989,14 +1056,14 @@ mod tests {
+     #[tokio::test]
+     async fn finish_buffered_response_without_captured_request_sends_no_event() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         let (parts, _) = Response::builder()
+             .status(StatusCode::NO_CONTENT)
+             .body(())
+             .unwrap()
+             .into_parts();
+ 
+-        let response = handler.finish_buffered_response(parts, Bytes::new());
++        let response = handler.finish_buffered_response(parts, Bytes::new()).await;
+ 
+         assert!(body_bytes(response).await.is_empty());
+         assert!(event_rx.try_recv().is_err());
+@@ -1005,7 +1072,7 @@ mod tests {
+     #[tokio::test]
+     async fn synthetic_response_returns_body_and_emits_completion() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(78);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+@@ -1039,7 +1106,7 @@ mod tests {
+     #[tokio::test]
+     async fn stream_response_forwards_full_body_and_emits_capped_snapshots() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.body_capture_limit = Some(4);
+         handler.pending_id = Some(88);
+ 
+@@ -1085,7 +1152,7 @@ mod tests {
+     #[tokio::test]
+     async fn stream_response_emits_partial_capture_when_body_is_dropped() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(90);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+@@ -1117,7 +1184,7 @@ mod tests {
+     #[tokio::test]
+     async fn stream_response_emits_for_already_empty_body() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(89);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+@@ -1148,7 +1215,7 @@ mod tests {
+     #[tokio::test]
+     async fn stream_response_waits_for_streaming_request_capture_before_empty_response_event() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(91);
+ 
+         let (req_parts, _) = Request::builder()
+@@ -1223,7 +1290,7 @@ mod tests {
+     #[tokio::test]
+     async fn handle_replayed_request_forwards_without_intercept() {
+         let (event_tx, _event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+ 
+         let request = handler
+             .handle_replayed_request(proxied_request())
+@@ -1245,7 +1312,7 @@ mod tests {
+     #[test]
+     fn take_pending_id_and_event_sender_clone_return_internal_state() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx);
++        let mut handler = CapturingHandler::new(Some(event_tx));
+         handler.pending_id = Some(123);
+ 
+         assert_eq!(handler.take_pending_id(), Some(123));
+@@ -1268,7 +1335,7 @@ mod tests {
+         let (event_tx, mut event_rx) = mpsc::channel(4);
+         let intercept = InterceptConfig::new();
+         intercept.set_enabled(true);
+-        let mut handler = CapturingHandler::new(event_tx).with_intercept(Arc::clone(&intercept));
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_intercept(Arc::clone(&intercept));
+ 
+         let task =
+             tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
+@@ -1306,7 +1373,7 @@ mod tests {
+         let (event_tx, mut event_rx) = mpsc::channel(4);
+         let intercept = InterceptConfig::new();
+         intercept.set_enabled(true);
+-        let mut handler = CapturingHandler::new(event_tx).with_intercept(Arc::clone(&intercept));
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_intercept(Arc::clone(&intercept));
+ 
+         let task =
+             tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
+@@ -1335,7 +1402,7 @@ mod tests {
+         let (event_tx, mut event_rx) = mpsc::channel(4);
+         let intercept = InterceptConfig::new();
+         intercept.set_enabled(true);
+-        let mut handler = CapturingHandler::new(event_tx).with_intercept(Arc::clone(&intercept));
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_intercept(Arc::clone(&intercept));
+ 
+         let task =
+             tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
+@@ -1376,7 +1443,7 @@ mod tests {
+             .unwrap();
+         let intercept = InterceptConfig::new();
+         intercept.set_enabled(true);
+-        let mut handler = CapturingHandler::new(event_tx).with_intercept(intercept);
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_intercept(intercept);
+ 
+         let request = handler
+             .handle_replayed_request(proxied_request())
+@@ -1393,7 +1460,7 @@ mod tests {
+     #[tokio::test]
+     async fn send_event_drops_full_or_closed_channels_without_panicking() {
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let handler = CapturingHandler::new(event_tx);
++        let handler = CapturingHandler::new(Some(event_tx));
+         handler.send_event(ProxyEvent::Error {
+             message: "first".to_owned(),
+         });
+@@ -1430,7 +1497,7 @@ mod tests {
+ 
+         let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx).with_script_engine(engine);
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_script_engine(engine);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+         let (parts, _) = Response::builder()
+@@ -1439,7 +1506,7 @@ mod tests {
+             .unwrap()
+             .into_parts();
+ 
+-        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original"));
++        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original")).await;
+ 
+         assert_eq!(response.status(), StatusCode::CREATED);
+         assert_eq!(response.headers()["x-script"], "yes");
+@@ -1473,7 +1540,7 @@ mod tests {
+ 
+         let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
+         let (event_tx, _event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx).with_script_engine(engine);
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_script_engine(engine);
+ 
+         let (parts, _) = Response::builder()
+             .status(StatusCode::OK)
+@@ -1481,7 +1548,7 @@ mod tests {
+             .unwrap()
+             .into_parts();
+ 
+-        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original"));
++        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original")).await;
+ 
+         assert_eq!(response.status(), StatusCode::OK);
+         assert_eq!(body_bytes(response).await.as_ref(), b"original");
+@@ -1506,7 +1573,7 @@ mod tests {
+ 
+         let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
+         let (event_tx, mut event_rx) = mpsc::channel(1);
+-        let mut handler = CapturingHandler::new(event_tx).with_script_engine(engine);
++        let mut handler = CapturingHandler::new(Some(event_tx)).with_script_engine(engine);
+         handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
+ 
+         let (parts, _) = Response::builder()
+@@ -1516,7 +1583,7 @@ mod tests {
+             .unwrap()
+             .into_parts();
+ 
+-        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original"));
++        let response = handler.finish_buffered_response(parts, Bytes::from_static(b"original")).await;
+ 
+         assert_eq!(response.status(), StatusCode::OK);
+         assert_eq!(response.headers()["x-original-response"], "yes");
+diff --git a/src/lib.rs b/src/lib.rs
+index 431cbc7..9f95ab3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,6 +7,7 @@
+ 
+ pub mod body;
+ pub mod ca;
++pub mod content_filter;
+ pub mod error;
+ pub mod event;
+ pub(crate) mod handler;
+@@ -20,6 +21,9 @@ use body::ProxyBody;
+ use hyper::{Request, Response};
+ use std::net::SocketAddr;
+ 
++pub use content_filter::{
++    ContentFilter, FilterVerdict, HttpFilterContext, WsFilterContext,
++};
+ pub use error::Error;
+ pub use event::ProxyEvent;
+ pub use handler::{CapturingHandler, DEFAULT_BODY_CAPTURE_LIMIT};
 diff --git a/src/proxy/forward.rs b/src/proxy/forward.rs
-index 23cea08..1929749 100644
+index 23cea08..9154857 100644
 --- a/src/proxy/forward.rs
 +++ b/src/proxy/forward.rs
-@@ -175,7 +175,9 @@ fn process_connect(
+@@ -17,6 +17,7 @@ use proxyapi_models::{ProxiedRequest, ProxiedResponse, WsDirection, WsFrame, WsO
+ 
+ use crate::body::{self, ProxyBody};
+ use crate::ca::{cert_server, CertificateAuthority, Ssl};
++use crate::content_filter::{ContentFilter, FilterVerdict, WsFilterContext};
+ use crate::event::ProxyEvent;
+ use crate::handler::{now_millis, CapturingHandler};
+ use crate::rewind::Rewind;
+@@ -175,7 +176,9 @@ fn process_connect(
                          }
                      }
                      StreamProtocol::Tls => {
@@ -13,7 +531,25 @@ index 23cea08..1929749 100644
                              Ok(cfg) => cfg,
                              Err(e) => {
                                  tracing::error!(
-@@ -426,11 +428,14 @@ impl TunnelRequestError {
+@@ -367,8 +370,16 @@ fn upgrade_websocket_response(
+ 
+     if let Some(client_fut) = client_on_upgrade {
+         let event_tx = handler.event_tx_clone();
++        let content_filter = handler.content_filter_clone();
+         tokio::spawn(async move {
+-            pump_websocket_frames(conn_id, client_fut, server_on_upgrade, event_tx).await;
++            pump_websocket_frames(
++                conn_id,
++                client_fut,
++                server_on_upgrade,
++                event_tx,
++                content_filter,
++            )
++            .await;
+         });
+     }
+ 
+@@ -426,11 +437,14 @@ impl TunnelRequestError {
      }
  }
  
@@ -29,7 +565,7 @@ index 23cea08..1929749 100644
      let mut filled = 0;
  
      loop {
-@@ -443,6 +448,17 @@ where
+@@ -443,6 +457,17 @@ where
          let prefix = &buffer[..filled];
  
          if is_tls_handshake(prefix) {
@@ -47,7 +583,7 @@ index 23cea08..1929749 100644
              return Ok((StreamProtocol::Tls, Bytes::copy_from_slice(prefix)));
          }
          if is_h2_preface(prefix) || is_http1_request(prefix) {
-@@ -475,6 +491,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
+@@ -475,6 +500,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
      buffered.len() >= 2 && buffered[0] == TLS_RECORD_HANDSHAKE && buffered[1] == TLS_VERSION_MAJOR
  }
  
@@ -145,26 +681,100 @@ index 23cea08..1929749 100644
  fn is_h2_preface(buffered: &[u8]) -> bool {
      buffered == H2_PREFACE
  }
-diff --git a/src/ca/mod.rs b/src/ca/mod.rs
-index 0000000..0000000 100644
---- a/src/ca/mod.rs
-+++ b/src/ca/mod.rs
-@@ -51,8 +51,8 @@ impl Ssl {
-     pub fn load_or_generate(dir: &Path) -> Result<Self, crate::error::Error> {
-         std::fs::create_dir_all(dir)?;
+@@ -507,7 +623,8 @@ async fn pump_websocket_frames(
+     conn_id: u64,
+     client_on_upgrade: hyper::upgrade::OnUpgrade,
+     server_on_upgrade: hyper::upgrade::OnUpgrade,
+-    event_tx: mpsc::Sender<ProxyEvent>,
++    event_tx: Option<mpsc::Sender<ProxyEvent>>,
++    content_filter: Option<Arc<dyn ContentFilter>>,
+ ) {
+     let (client_upgraded, server_upgraded) =
+         match tokio::try_join!(client_on_upgrade, server_on_upgrade) {
+@@ -548,6 +665,14 @@ async fn pump_websocket_frames(
+             },
+             msg = server_ws.next() => match msg {
+                 Some(Ok(frame)) => {
++                    if let Some(FilterVerdict::Block { message }) =
++                        filter_server_ws_frame(&content_filter, &frame).await
++                    {
++                        let text = String::from_utf8_lossy(&message).into_owned();
++                        let _ = client_ws.send(Message::Text(text.into())).await;
++                        let _ = client_ws.send(Message::Close(None)).await;
++                        break;
++                    }
+                     emit_ws_frame(&event_tx, conn_id, &frame, WsDirection::ServerToClient);
+                     if client_ws.send(frame).await.is_err() { break; }
+                 }
+@@ -560,12 +685,36 @@ async fn pump_websocket_frames(
+         }
+     }
  
--        let cert_path = dir.join("proxelar-ca.pem");
--        let key_path = dir.join("proxelar-ca.key");
-+        let cert_path = dir.join("rootCA.pem");
-+        let key_path = dir.join("rootCA-key.pem");
+-    let _ = event_tx.try_send(ProxyEvent::WebSocketClosed { conn_id });
++    if let Some(tx) = &event_tx {
++        let _ = tx.try_send(ProxyEvent::WebSocketClosed { conn_id });
++    }
++}
++
++async fn filter_server_ws_frame(
++    filter: &Option<Arc<dyn ContentFilter>>,
++    frame: &Message,
++) -> Option<FilterVerdict> {
++    let filter = filter.as_ref()?;
++    let (opcode, payload): (&str, &[u8]) = match frame {
++        Message::Text(s) => ("text", s.as_bytes()),
++        Message::Binary(b) => ("binary", b.as_ref()),
++        _ => return None,
++    };
++    let ctx = WsFilterContext {
++        direction: "server_to_client",
++        opcode,
++        payload,
++    };
++    let verdict = filter.check_ws_frame(ctx).await;
++    match verdict {
++        FilterVerdict::Allow => None,
++        block @ FilterVerdict::Block { .. } => Some(block),
++    }
+ }
  
-         let (pkey, ca_cert) = if cert_path.exists() && key_path.exists() {
-             tracing::info!("Loading CA certificate from {}", dir.display());
+ /// Convert a tungstenite [`Message`] into a [`WsFrame`] event and send it.
+ fn emit_ws_frame(
+-    tx: &mpsc::Sender<ProxyEvent>,
++    tx: &Option<mpsc::Sender<ProxyEvent>>,
+     conn_id: u64,
+     msg: &Message,
+     direction: WsDirection,
+@@ -582,10 +731,12 @@ fn emit_ws_frame(
+     let limit = MAX_WS_FRAME_PAYLOAD.unwrap_or(raw.len());
+     let truncated = raw.len() > limit;
+     let payload = Bytes::copy_from_slice(&raw[..raw.len().min(limit)]);
+-    let _ = tx.try_send(ProxyEvent::WebSocketFrame {
+-        conn_id,
+-        frame: Box::new(WsFrame::new(direction, opcode, time, payload, truncated)),
+-    });
++    if let Some(tx) = tx {
++        let _ = tx.try_send(ProxyEvent::WebSocketFrame {
++            conn_id,
++            frame: Box::new(WsFrame::new(direction, opcode, time, payload, truncated)),
++        });
++    }
+ }
+ 
+ /// Send a previously captured request back through the proxy pipeline.
 diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
-index d0849f8..5c146fa 100644
+index d0849f8..ce4677b 100644
 --- a/src/proxy/mod.rs
 +++ b/src/proxy/mod.rs
-@@ -101,9 +101,21 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
+@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
+ 
+ use crate::body::ProxyBody;
+ use crate::ca::Ssl;
++use crate::content_filter::ContentFilter;
+ use crate::error::Error;
+ use crate::event::ProxyEvent;
+ use crate::handler::CapturingHandler;
+@@ -101,9 +102,21 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
      res.headers_mut().remove(TE);
  }
  
@@ -186,3 +796,46 @@ index d0849f8..5c146fa 100644
      }
  }
  
+@@ -152,8 +165,10 @@ pub struct ProxyConfig {
+     pub addr: SocketAddr,
+     /// Forward or reverse proxy mode.
+     pub mode: ProxyMode,
+-    /// Channel for emitting captured proxy events.
+-    pub event_tx: mpsc::Sender<ProxyEvent>,
++    /// Optional channel for emitting captured proxy events.
++    pub event_tx: Option<mpsc::Sender<ProxyEvent>>,
++    /// Optional content filter for HTTP responses and WebSocket frames.
++    pub content_filter: Option<Arc<dyn ContentFilter>>,
+     /// Directory for CA certificate and key files.
+     pub ca_dir: PathBuf,
+     /// Upstream HTTPS server trust policy.
+@@ -251,6 +266,9 @@ impl Proxy {
+                     if let Some(ref ic) = self.config.intercept {
+                         handler = handler.with_intercept(Arc::clone(ic));
+                     }
++                    if let Some(ref filter) = self.config.content_filter {
++                        handler = handler.with_content_filter(Arc::clone(filter));
++                    }
+                     #[cfg(feature = "scripting")]
+                     if let Some(ref engine) = script_engine {
+                         handler = handler.with_script_engine(Arc::clone(engine));
+@@ -279,6 +297,9 @@ impl Proxy {
+                     if let Some(ref ic) = self.config.intercept {
+                         handler = handler.with_intercept(Arc::clone(ic));
+                     }
++                    if let Some(ref filter) = self.config.content_filter {
++                        handler = handler.with_content_filter(Arc::clone(filter));
++                    }
+                     #[cfg(feature = "scripting")]
+                     if let Some(ref engine) = script_engine {
+                         handler = handler.with_script_engine(Arc::clone(engine));
+@@ -334,7 +355,8 @@ mod tests {
+             mode: ProxyMode::Reverse {
+                 target: "http://example.test".parse().unwrap(),
+             },
+-            event_tx,
++            event_tx: Some(event_tx),
++            content_filter: None,
+             ca_dir: PathBuf::from("."),
+             upstream_tls: UpstreamTlsConfig::Default,
+             intercept: None,

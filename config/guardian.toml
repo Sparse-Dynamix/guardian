@@ -1,6 +1,6 @@
 bind = "127.0.0.1"
 # port = 8080   # optional; omit for auto free port in [port_min, port_max]
-body_limit = 256
+# trypanophobe_filter = "http://127.0.0.1:3000/pass"
 # filter — omit for denylist mode (hook all TCP except ignored_ports)
 # filter = "(sa_family == 2 || sa_family == 0) && ![22, 53, 5432].includes(port)"
 ignored_ports = [
@@ -8,8 +8,11 @@ ignored_ports = [
     3306, 5432, 6379, 27017, 3389, 389, 636, 5060,
 ]
 ca_dir = "~/.guardian"
-silent = false
 no_color = false
+
+filter_timeout_secs = 10
+filter_body_limit = 1048576
+block_message = "Blocked by Guardian: content failed safety check"
 
 port_min = 1024
 port_max = 65535

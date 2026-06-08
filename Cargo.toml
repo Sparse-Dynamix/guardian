@@ -3,7 +3,7 @@ name = "guardian"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Intercept and log HTTP/S and WebSocket traffic for any command"
+description = "Harden AI harnesses by filtering web traffic and tool-call payloads"
 build = "build.rs"
 
 [dependencies]
@@ -21,6 +21,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 tokio-util = "0.7"
 dirs = "6"
 anyhow = "1"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-native-certs = "0.8"
 port_check = "0.3"

@@ -50,12 +50,10 @@ fn run_guardian_program(program_args: &[&str], timeout: Duration) -> std::io::Re
             process.stderr = None;
         }
         if let Some(status) = process.try_wait()? {
-            let jsonl = common::parse_jsonl(&stderr);
             return Ok(GuardianRun {
                 exit_code: status.code().unwrap_or(-1),
                 stdout,
                 stderr,
-                jsonl,
                 _ca_dir: ca_dir,
             });
         }
