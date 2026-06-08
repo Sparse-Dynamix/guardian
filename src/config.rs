@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use config::{Config, Environment, File};
 use serde::Deserialize;
 
-use crate::cli::{default_filter, parse_bind_ipv4, Cli};
+use crate::cli::{parse_bind_ipv4, Cli};
+use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -14,6 +15,8 @@ pub struct FileSettings {
     pub port: Option<u16>,
     pub body_limit: usize,
     pub filter: Option<String>,
+    #[serde(default = "default_ignored_ports")]
+    pub ignored_ports: Vec<u16>,
     pub ca_dir: String,
     pub silent: bool,
     pub port_min: u16,
@@ -38,6 +41,7 @@ impl Default for FileSettings {
             port: None,
             body_limit: 256,
             filter: None,
+            ignored_ports: default_ignored_ports(),
             ca_dir: "~/.proxelar".to_string(),
             silent: false,
             port_min: 1024,
@@ -80,6 +84,10 @@ pub struct Settings {
     pub tracing_default_level: String,
     pub program: String,
     pub args: Vec<String>,
+}
+
+fn default_ignored_ports() -> Vec<u16> {
+    DEFAULT_IGNORED_PORTS.to_vec()
 }
 
 fn expand_tilde(path: &str) -> Result<PathBuf> {
@@ -166,7 +174,15 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         .filter
         .clone()
         .or(file.filter.clone())
-        .unwrap_or_else(default_filter);
+        .unwrap_or_else(|| {
+            let ports = cli
+                .ignored_ports
+                .as_ref()
+                .filter(|ports| !ports.is_empty())
+                .cloned()
+                .unwrap_or(file.ignored_ports);
+            connect_filter_from_ports(&ports)
+        });
     let ca_dir = match &cli.ca_dir {
         Some(dir) => dir.clone(),
         None => expand_tilde(&file.ca_dir)?,
@@ -297,6 +313,43 @@ mod tests {
         let cli = Cli::try_parse_from(["guardian", "--", "true"]).unwrap();
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.filter.contains("includes(port)"));
+        assert!(settings.filter.contains("22"));
+    }
+
+    #[test]
+    fn ignored_ports_cli_override() {
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--ignored-ports",
+            "22,8080",
+            "--",
+            "true",
+        ])
+        .unwrap();
+
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.filter.contains("8080"));
+        assert!(!settings.filter.contains("5432"));
+    }
+
+    #[test]
+    fn ignored_ports_from_file_when_filter_unset() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        let mut f = fs::File::create(&cfg_path).unwrap();
+        writeln!(f, "ignored_ports = [22, 8080]").unwrap();
+
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--",
+            "true",
+        ])
+        .unwrap();
+
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.filter.contains("8080"));
         assert!(settings.filter.contains("22"));
     }
 

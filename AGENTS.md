@@ -38,7 +38,7 @@ flowchart TB
     Forward --> TLS --> Events
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (UDP passes through unchanged, including DNS); redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Platform-default filter when unset: all IPv4 TCP except a built-in non-HTTP port denylist (HTTP Toolkit-style; see `cli::default_filter()` and `IGNORED_NON_HTTP_PORTS`).
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (UDP passes through unchanged, including DNS); redirect to `bind_ip:proxy_port`; send synthetic `CONNECT` (fritm pattern). Default filter when unset: all IPv4 TCP except `ignored_ports` (HTTP Toolkit-style denylist; see `config/guardian.toml` and `filter::connect_filter_from_ports()`).
 
 **Layer 2** — `ProxyMode::Forward`, `intercept: None`, TLS MITM via Proxelar CA in `ca_dir`.
 
@@ -159,13 +159,13 @@ npm install
 cargo build --release
 ```
 
-`proxyapi` is patched via `patches/proxyapi+0.4.5.patch` ([cargo-patch-crate](https://github.com/mokeyish/cargo-patch-crate) format). The patched tree lands in `target/patch/` (gitignored). Cargo resolves `[patch.crates-io]` before `build.rs`, so run the bootstrap once before a plain `cargo build`:
+`proxyapi` is patched via `patches/proxyapi+0.4.5.patch` ([cargo-patch-crate](https://github.com/mokeyish/cargo-patch-crate) format). The patched tree lands in `target/patch/` (gitignored). Before the first `cargo` command on a fresh clone:
 
 ```bash
 cargo run --quiet --manifest-path tools/patch-proxyapi/Cargo.toml
 ```
 
-npm/zx build scripts call that automatically. `build.rs` reapplies when `patches/` changes (next build picks up the refreshed `proxyapi`).
+npm/zx scripts (`smoke`, `coverage`, release builds) run that automatically.
 
 Binary: `target/release/guardian`. Ship `libfrida-core` beside the binary when dynamically linked (`build.rs` sets `rpath $ORIGIN` on Linux, `@loader_path` on macOS).
 
@@ -237,7 +237,7 @@ guardian -- curl -sSf https://httpbin.org/get
 guardian -- sh -c 'curl -sSf https://httpbin.org/get'
 ```
 
-Bare command names are resolved via `PATH` before Frida spawn; absolute and relative paths still work. Default connect filter intercepts all IPv4 TCP except common non-HTTP ports (`cli::IGNORED_NON_HTTP_PORTS` / `cli::default_filter()`).
+Bare command names are resolved via `PATH` before Frida spawn; absolute and relative paths still work. Default connect filter intercepts all IPv4 TCP except ports listed in `ignored_ports` (`config/guardian.toml`, `--ignored-ports`, or built-in defaults in `filter::DEFAULT_IGNORED_PORTS`).
 
 ## Known limitations
 
@@ -260,13 +260,14 @@ Defaults live in [`config/guardian.toml`](config/guardian.toml) and [`FileSettin
 | `bind` | `-b, --bind` | `GUARDIAN_BIND` | `127.0.0.1` | Proxy bind IPv4 (`BIND_HOST` in hook) |
 | `port` | `-p, --port` | `GUARDIAN_PORT` | (unset) | Fixed listen port; omit for auto |
 | `body_limit` | `--body-limit` | `GUARDIAN_BODY_LIMIT` | `256` | JSONL body/frame preview max bytes |
-| `filter` | `--filter` | `GUARDIAN_FILTER` | platform default | JS connect filter expression |
+| `filter` | `--filter` | `GUARDIAN_FILTER` | (unset) | JS connect filter; when unset, built from `ignored_ports` |
+| `ignored_ports` | `--ignored-ports` | — | see `config/guardian.toml` | TCP ports left unhooked when `filter` is unset |
 | `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.proxelar` | Proxelar CA directory |
 | `silent` | `--silent` | `GUARDIAN_SILENT` | `false` | Suppress JSONL on stderr |
 | — | `--config` | — | — | Extra config file path |
 | — | `-v` | `RUST_LOG` | off | Internal tracing to stderr |
 
-Platform default `filter` when unset: IPv4 TCP except `IGNORED_NON_HTTP_PORTS` (SSH 22, DNS 53, Postgres 5432, etc.). Proxelar sniffs redirected traffic and only MITM-logs HTTP/TLS/WebSocket; unknown protocols are tunneled without JSONL. Override with `--filter` / `GUARDIAN_FILTER`. Not a config file key — built in `cli::default_filter()`.
+Platform default `filter` when unset: IPv4 TCP except `ignored_ports` (SSH 22, DNS 53, Postgres 5432, etc.). Proxelar sniffs redirected traffic and only MITM-logs HTTP/TLS/WebSocket; unknown protocols are tunneled without JSONL. Override ports with `ignored_ports` / `--ignored-ports`, or replace the whole expression with `--filter` / `GUARDIAN_FILTER`.
 
 ### Internal tuning (config file + env only)
 

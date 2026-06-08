@@ -12,23 +12,9 @@ const PATCH_FILE: &str = "patches/proxyapi+0.4.5.patch";
 const STAMP_FILE: &str = "target/proxyapi-patch.stamp";
 
 pub fn apply_if_needed(manifest_dir: &Path) -> Result<()> {
-    apply_if_needed_inner(manifest_dir, false)
-}
-
-#[allow(dead_code)]
-pub fn apply_if_needed_build(manifest_dir: &Path) -> Result<()> {
-    apply_if_needed_inner(manifest_dir, true)
-}
-
-fn apply_if_needed_inner(manifest_dir: &Path, emit_cargo_directives: bool) -> Result<()> {
     let crate_dir = manifest_dir.join(CRATE_DIR);
     let patch_path = manifest_dir.join(PATCH_FILE);
     let stamp_path = manifest_dir.join(STAMP_FILE);
-
-    if emit_cargo_directives {
-        println!("cargo:rerun-if-changed={PATCH_FILE}");
-        println!("cargo:rerun-if-changed={CRATE_DIR}/Cargo.toml");
-    }
 
     if !patch_path.is_file() {
         anyhow::bail!("missing patch file: {}", patch_path.display());

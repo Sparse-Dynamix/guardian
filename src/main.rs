@@ -1,6 +1,7 @@
 mod ca;
 mod cli;
 mod config;
+mod filter;
 mod frida_ext;
 mod injector;
 mod jsonl;

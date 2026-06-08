@@ -44,6 +44,30 @@ function ipv4FromSockaddr(addrPtr) {
     return ip;
 }
 
+function isStreamSocket(sockfd) {
+    if (Process.platform === 'windows') {
+        var ws2 = Process.getModuleByName('ws2_32.dll');
+        var getsockopt = new NativeFunction(
+            ws2.getExportByName('getsockopt'),
+            'int',
+            ['uint', 'int', 'int', 'pointer', 'pointer']
+        );
+        var SOL_SOCKET = 0xffff;
+        var SO_TYPE = 0x1008;
+        var SOCK_STREAM = 1;
+        var soType = Memory.alloc(4);
+        var len = Memory.alloc(4);
+        len.writeS32(4);
+        var s = sockfd instanceof NativePointer ? sockfd.toUInt32() : sockfd;
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, soType, len) !== 0) {
+            return false;
+        }
+        return soType.readS32() === SOCK_STREAM;
+    }
+    var sockType = Socket.type(sockfd);
+    return sockType === 'tcp' || sockType === 'tcp6';
+}
+
 function mapAddrinfoResults(host, resPtr) {
     if (!host || resPtr.isNull()) {
         return;
@@ -165,14 +189,8 @@ function hookConnect(connect_p, send_p, recv_p) {
         onEnter: function (args) {
             this.sockfd = args[0];
             var sockfd = this.sockfd.toInt32();
-            var sockType = Socket.type(sockfd);
-            if (sockType !== 'tcp' && sockType !== 'tcp6') {
-                this.hook = false;
-                return;
-            }
-
             var sockaddr_p = args[1];
-            this.sa_family = sockaddr_p.add(1).readU8();
+            this.sa_family = sockaddr_p.readU16();
             this.port = 256 * sockaddr_p.add(2).readU8() + sockaddr_p.add(3).readU8();
             this.addr = ipv4FromSockaddr(sockaddr_p);
 
@@ -183,6 +201,11 @@ function hookConnect(connect_p, send_p, recv_p) {
 
             this.hook = filter(this.sa_family, this.addr, this.port);
             if (!this.hook) {
+                return;
+            }
+
+            if (!isStreamSocket(sockfd)) {
+                this.hook = false;
                 return;
             }
 

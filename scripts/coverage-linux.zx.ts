@@ -1,10 +1,12 @@
 import { $ } from "zx";
 import { requirePlatform } from "./lib/guard.ts";
 import { applyJdkEnv, ensurePortableJdk } from "./lib/jdk.ts";
+import { applyCratePatches } from "./lib/cargo.ts";
 import { cdRepo } from "./lib/repo.ts";
 
 requirePlatform("linux");
 cdRepo();
+applyCratePatches();
 
 await $`command -v cargo-llvm-cov`.quiet().catch(() => {
   throw new Error(

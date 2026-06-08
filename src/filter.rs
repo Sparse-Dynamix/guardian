@@ -1,0 +1,35 @@
+//! Connect-hook filter expressions (HTTP Toolkit-style TCP port denylist).
+
+/// Well-known non-HTTP TCP ports left untouched by the default connect hook.
+pub const DEFAULT_IGNORED_PORTS: &[u16] = &[
+    21, 22, 23, 25, 53, 853, 5353, 110, 143, 465, 587, 993, 995, 3306, 5432, 6379, 27017, 3389,
+    389, 636, 5060,
+];
+
+pub fn connect_filter_from_ports(ports: &[u16]) -> String {
+    let list = ports
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("(sa_family == 2 || sa_family == 0) && ![{list}].includes(port)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_ports_exclude_ssh() {
+        let filter = connect_filter_from_ports(DEFAULT_IGNORED_PORTS);
+        assert!(filter.contains("22"));
+        assert!(filter.contains("includes(port)"));
+    }
+
+    #[test]
+    fn custom_ports_list() {
+        let filter = connect_filter_from_ports(&[22, 8080]);
+        assert!(filter.contains("22"));
+        assert!(filter.contains("8080"));
+    }
+}

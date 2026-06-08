@@ -4,13 +4,6 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::Parser;
 
-/// Well-known non-HTTP TCP ports left untouched by the default connect hook.
-/// HTTP Toolkit-style denylist; override with `--filter` for app-specific ports.
-pub const IGNORED_NON_HTTP_PORTS: &[u16] = &[
-    21, 22, 23, 25, 53, 853, 5353, 110, 143, 465, 587, 993, 995, 3306, 5432, 6379, 27017, 3389,
-    389, 636, 5060,
-];
-
 #[derive(Debug, Parser)]
 #[command(
     name = "guardian",
@@ -44,6 +37,10 @@ pub struct Cli {
     #[arg(long)]
     pub filter: Option<String>,
 
+    /// Non-HTTP TCP ports to leave unhooked when `--filter` is unset (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    pub ignored_ports: Option<Vec<u16>>,
+
     /// Config file path.
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -55,19 +52,6 @@ pub struct Cli {
     /// Subcommand program and arguments (after `--`).
     #[arg(required = true)]
     pub program: Vec<String>,
-}
-
-pub fn default_filter() -> String {
-    let ports = IGNORED_NON_HTTP_PORTS
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if cfg!(target_os = "windows") {
-        format!("![{ports}].includes(port)")
-    } else {
-        format!("(sa_family == 2 || sa_family == 0) && ![{ports}].includes(port)")
-    }
 }
 
 pub fn parse_bind_ipv4(bind: &str) -> Result<Ipv4Addr> {
@@ -97,13 +81,6 @@ mod tests {
     #[test]
     fn parse_bind_rejects_garbage() {
         assert!(parse_bind_ipv4("not-an-ip").is_err());
-    }
-
-    #[test]
-    fn default_filter_excludes_ssh_and_includes_http_alt() {
-        let filter = default_filter();
-        assert!(filter.contains("22"));
-        assert!(filter.contains("443") || !filter.contains("port == 443"));
     }
 
     #[test]

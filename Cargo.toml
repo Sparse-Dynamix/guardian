@@ -32,14 +32,6 @@ tokio-tungstenite = { version = "0.26", optional = true, features = ["rustls-tls
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
 native-tls = { version = "0.2", optional = true }
 
-[build-dependencies]
-anyhow = "1"
-flate2 = "1"
-git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
-tar = "0.4"
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-walkdir = "2"
-
 [patch.crates-io]
 proxyapi = { path = "./target/patch/proxyapi-0.4.5" }
 

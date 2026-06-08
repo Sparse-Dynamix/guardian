@@ -410,13 +410,13 @@ mod tests {
 
     #[test]
     fn hook_bundle_uses_default_denylist_filter() {
-        use crate::cli::default_filter;
+        use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
 
         let settings = test_settings();
         let ca = CaTrust::from_settings(&settings);
-        let filter = default_filter();
+        let filter = connect_filter_from_ports(DEFAULT_IGNORED_PORTS);
         let bundle = build_hook_bundle(9999, &filter, Ipv4Addr::LOCALHOST, &ca).unwrap();
-        assert!(bundle.connect_hook.contains("Socket.type"));
+        assert!(bundle.connect_hook.contains("isStreamSocket"));
         assert!(bundle.connect_hook.contains("9999"));
         assert!(bundle.connect_hook.contains("includes(port)"));
     }
