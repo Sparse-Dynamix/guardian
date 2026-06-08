@@ -52,9 +52,8 @@ impl CaTrust {
     }
 
     pub fn ensure_artifacts(&mut self, settings: &Settings) -> Result<()> {
-        fs::create_dir_all(&self.caroot).with_context(|| {
-            format!("failed to create CA directory {}", self.caroot.display())
-        })?;
+        fs::create_dir_all(&self.caroot)
+            .with_context(|| format!("failed to create CA directory {}", self.caroot.display()))?;
 
         let proxelar_ca = self.caroot.join(PROXELAR_CA);
         if !proxelar_ca.exists() {
@@ -75,8 +74,7 @@ impl CaTrust {
         fs::write(&self.ca_bundle, &bundle)
             .with_context(|| format!("failed to write {}", self.ca_bundle.display()))?;
 
-        self.java_truststore =
-            build_java_truststore(&self.caroot, &proxelar_ca, settings).ok();
+        self.java_truststore = build_java_truststore(&self.caroot, &proxelar_ca, settings).ok();
         Ok(())
     }
 
@@ -133,7 +131,10 @@ impl CaTrust {
                 out.push(("JAVA_TOOL_OPTIONS".to_string(), flag));
             } else if let Some(existing) = parent.get("JAVA_TOOL_OPTIONS") {
                 if !existing.contains("javax.net.ssl.trustStore=") {
-                    out.push(("JAVA_TOOL_OPTIONS".to_string(), format!("{existing} {flag}")));
+                    out.push((
+                        "JAVA_TOOL_OPTIONS".to_string(),
+                        format!("{existing} {flag}"),
+                    ));
                 }
             }
         }
@@ -324,7 +325,9 @@ mod tests {
         };
         let env = trust.env_for_child(&[("NODE_OPTIONS".into(), "--max-old-space-size=64".into())]);
         assert!(env.iter().any(|(k, v)| {
-            k == "NODE_OPTIONS" && v.contains("--use-openssl-ca") && v.contains("--max-old-space-size=64")
+            k == "NODE_OPTIONS"
+                && v.contains("--use-openssl-ca")
+                && v.contains("--max-old-space-size=64")
         }));
     }
 
@@ -347,5 +350,63 @@ mod tests {
         assert_eq!(map.get("HOME").map(String::as_str), Some("/home/test"));
         assert_eq!(map.get("PATH").map(String::as_str), Some("/usr/bin"));
         assert!(map.contains_key("SSL_CERT_FILE"));
+    }
+
+    #[test]
+    fn env_for_child_appends_java_truststore_when_missing() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: Some(PathBuf::from(
+                "/tmp/guardian-ca/guardian-java-truststore.p12",
+            )),
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let env = trust.env_for_child(&[("JAVA_TOOL_OPTIONS".into(), "-Xmx64m".into())]);
+        assert!(env.iter().any(|(k, v)| {
+            k == "JAVA_TOOL_OPTIONS"
+                && v.contains("-Xmx64m")
+                && v.contains("javax.net.ssl.trustStore=")
+        }));
+    }
+
+    #[test]
+    fn env_for_child_skips_existing_java_truststore_flag() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: Some(PathBuf::from(
+                "/tmp/guardian-ca/guardian-java-truststore.p12",
+            )),
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let env = trust.env_for_child(&[(
+            "JAVA_TOOL_OPTIONS".into(),
+            "-Djavax.net.ssl.trustStore=/existing.p12".into(),
+        )]);
+        assert!(!env.iter().any(|(k, v)| {
+            k == "JAVA_TOOL_OPTIONS" && v.contains("guardian-java-truststore.p12")
+        }));
+    }
+
+    #[test]
+    fn env_pairs_for_injection_serializes_key_values() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: None,
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let pairs = trust.env_pairs_for_injection();
+        assert!(pairs
+            .iter()
+            .any(|p| { p == "CURL_CA_BUNDLE=/tmp/guardian-ca/guardian-ca-bundle.pem" }));
+        assert!(pairs.iter().any(|p| p == "NODE_OPTIONS=--use-openssl-ca"));
     }
 }

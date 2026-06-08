@@ -1,8 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { $ } from "zx";
+import { $, usePowerShell } from "zx";
 import type { HostPlatform } from "./guard.ts";
 import { REPO_ROOT } from "./repo.ts";
+
+if (process.platform === "win32") {
+  usePowerShell();
+}
 
 const JDK_DIR = path.join(REPO_ROOT, ".cache", "jdk-17");
 
@@ -66,7 +70,7 @@ export async function ensurePortableJdk(
     const extractRoot = path.join(REPO_ROOT, ".cache", "jdk-extract");
     fs.rmSync(extractRoot, { recursive: true, force: true });
     if (process.platform === "win32") {
-      await $`powershell -NoProfile -Command Expand-Archive -Path ${zip} -DestinationPath ${extractRoot} -Force`;
+      await $`powershell.exe -NoProfile -Command Expand-Archive -Path ${zip} -DestinationPath ${extractRoot} -Force`;
     } else {
       await $`unzip -q -o ${zip} -d ${extractRoot}`;
     }

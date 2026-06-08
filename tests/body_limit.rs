@@ -11,7 +11,7 @@ fn body_limit_truncates_jsonl_previews() {
 
     let opts = GuardianOptions {
         body_limit: Some(32),
-        url: Some("http://httpbin.org/bytes/512".to_string()),
+        url: Some("http://httpbingo.org/bytes/512".to_string()),
         ..GuardianOptions::default()
     };
 

@@ -1,6 +1,10 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { $, usePowerShell } from "zx";
 import { cdRepo, REPO_ROOT } from "./repo.ts";
+
+if (process.platform === "win32") {
+  usePowerShell();
+}
 
 function cargoExecutable(): string {
   if (process.platform === "win32") {
@@ -20,19 +24,18 @@ const PATCH_PROXYAPI_MANIFEST = path.join(
 export function applyCratePatches(): void {
   cdRepo();
   const cargo = cargoExecutable();
-  const result = spawnSync(
-    cargo,
-    ["run", "--quiet", "--manifest-path", PATCH_PROXYAPI_MANIFEST],
-    {
-      stdio: "inherit",
-      env: process.env,
-      cwd: REPO_ROOT,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `patch-proxyapi failed (exit ${result.status ?? 1})`,
-    );
+  const shell = $.sync({
+    stdio: "inherit",
+    env: process.env,
+    cwd: REPO_ROOT,
+    nothrow: true,
+  });
+  const result =
+    process.platform === "win32"
+      ? shell`& ${cargo} run --quiet --manifest-path ${PATCH_PROXYAPI_MANIFEST}`
+      : shell`${cargo} run --quiet --manifest-path ${PATCH_PROXYAPI_MANIFEST}`;
+  if (result.exitCode !== 0) {
+    throw new Error(`patch-proxyapi failed (exit ${result.exitCode ?? 1})`);
   }
 }
 
@@ -40,14 +43,19 @@ export function runCargo(args: string[]): void {
   applyCratePatches();
   cdRepo();
   const cargo = cargoExecutable();
-  const result = spawnSync(cargo, args, {
+  const shell = $.sync({
     stdio: "inherit",
     env: process.env,
     cwd: REPO_ROOT,
+    nothrow: true,
   });
-  if (result.status !== 0) {
+  const result =
+    process.platform === "win32"
+      ? shell`& ${cargo} ${args}`
+      : shell`${cargo} ${args}`;
+  if (result.exitCode !== 0) {
     throw new Error(
-      `cargo ${args.join(" ")} failed (exit ${result.status ?? 1})`,
+      `cargo ${args.join(" ")} failed (exit ${result.exitCode ?? 1})`,
     );
   }
 }

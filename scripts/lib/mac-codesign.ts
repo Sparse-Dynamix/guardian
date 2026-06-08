@@ -54,10 +54,15 @@ export async function stageSignedPrintenv(destDir: string): Promise<void> {
   await stageSignedTool(destDir, "guardian-printenv", "printenv");
 }
 
+export async function stageSignedSleep(destDir: string): Promise<void> {
+  await stageSignedTool(destDir, "guardian-sleep", "sleep");
+}
+
 export async function prepareMacSmokePath(binDir: string): Promise<string> {
   const signed = await stageSignedCurl(binDir);
   fs.copyFileSync(signed, path.join(binDir, "curl"));
   await stageSignedEnv(binDir);
   await stageSignedPrintenv(binDir);
+  await stageSignedSleep(binDir);
   return `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 }

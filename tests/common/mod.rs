@@ -8,8 +8,8 @@ use std::time::Duration;
 use serde_json::Value;
 use tempfile::TempDir;
 
-const DEFAULT_SMOKE_URL: &str = "http://httpbin.org/get";
-const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbin.org/get";
+const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
+const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbingo.org/get";
 
 pub struct GuardianRun {
     pub exit_code: i32,
@@ -68,10 +68,7 @@ pub fn child_wrapper_program() -> Option<String> {
         return None;
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for sub in [
-        "target/debug/guardian-env",
-        "target/release/guardian-env",
-    ] {
+    for sub in ["target/debug/guardian-env", "target/release/guardian-env"] {
         let path = manifest.join(sub);
         if path.is_file() {
             return Some(path.display().to_string());
@@ -82,7 +79,10 @@ pub fn child_wrapper_program() -> Option<String> {
 
 fn staged_mac_binary(name: &str) -> Option<String> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for sub in [format!("target/debug/{name}"), format!("target/release/{name}")] {
+    for sub in [
+        format!("target/debug/{name}"),
+        format!("target/release/{name}"),
+    ] {
         let path = manifest.join(&sub);
         if path.is_file() {
             return Some(path.display().to_string());
@@ -128,8 +128,21 @@ pub fn resolve_executable(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-fn curl_args(url: &str) -> Vec<String> {
-    vec![curl_program(), "-sS".to_string(), url.to_string()]
+fn curl_args(url: &str, ca_dir: Option<&Path>) -> Vec<String> {
+    let mut args = vec![curl_program(), "-sS".to_string()];
+    if cfg!(target_os = "macos") {
+        args.push("--ipv4".to_string());
+    }
+    if cfg!(windows) && url.starts_with("https://") {
+        args.push("--ipv4".to_string());
+        args.push("--ssl-no-revoke".to_string());
+        if let Some(ca_dir) = ca_dir {
+            args.push("--cacert".to_string());
+            args.push(ca_dir.join("guardian-ca-bundle.pem").display().to_string());
+        }
+    }
+    args.push(url.to_string());
+    args
 }
 
 pub fn run_guardian_echo_env_var(
@@ -139,20 +152,12 @@ pub fn run_guardian_echo_env_var(
 ) -> std::io::Result<GuardianRun> {
     let ca_dir = TempDir::new()?;
     let child_args: Vec<String> = if cfg!(windows) {
-        vec![
-            cmd_program(),
-            "/c".to_string(),
-            format!("echo %{}%", var),
-        ]
+        vec![cmd_program(), "/c".to_string(), format!("echo %{}%", var)]
     } else if let Some(printenv) = staged_printenv_program() {
         vec![printenv, var.to_string()]
     } else {
         let sh = resolve_executable("sh");
-        vec![
-            sh,
-            "-c".to_string(),
-            format!("echo ${var}"),
-        ]
+        vec![sh, "-c".to_string(), format!("echo ${var}")]
     };
 
     let mut args = vec![
@@ -225,7 +230,10 @@ impl Default for GuardianOptions {
 }
 
 pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<GuardianRun> {
-    run_guardian_http_with_retry(|| run_guardian_with_options_once(&opts))
+    run_guardian_http_with_retry(
+        || run_guardian_with_options_once(&opts),
+        |run| child_stdout_ok(run) && (opts.silent || has_http_jsonl(run)),
+    )
 }
 
 fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
@@ -253,7 +261,7 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
     let ca_dir = TempDir::new()?;
     args.push(ca_dir.path().display().to_string());
     args.push("--".to_string());
-    args.extend(curl_args(&url));
+    args.extend(curl_args(&url, Some(ca_dir.path())));
     let extra_env = if opts.verbose {
         vec![("RUST_LOG", "guardian=trace")]
     } else {
@@ -263,7 +271,10 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
 }
 
 pub fn run_guardian_child_spawn(silent: bool) -> std::io::Result<GuardianRun> {
-    run_guardian_http_with_retry(|| run_guardian_child_spawn_once(silent))
+    run_guardian_http_with_retry(
+        || run_guardian_child_spawn_once(silent),
+        |run| child_stdout_ok(run) && (silent || has_http_jsonl(run)),
+    )
 }
 
 fn run_guardian_child_spawn_once(silent: bool) -> std::io::Result<GuardianRun> {
@@ -346,18 +357,18 @@ fn run_guardian_with_args(
 
 const GUARDIAN_HTTP_RETRIES: usize = 3;
 
-fn run_guardian_http_with_retry<F>(mut run_once: F) -> std::io::Result<GuardianRun>
+fn run_guardian_http_with_retry<F, P>(
+    mut run_once: F,
+    mut is_complete: P,
+) -> std::io::Result<GuardianRun>
 where
     F: FnMut() -> std::io::Result<GuardianRun>,
+    P: FnMut(&GuardianRun) -> bool,
 {
     let mut last = None;
     for attempt in 0..GUARDIAN_HTTP_RETRIES {
         let run = run_once()?;
-        let has_http = run
-            .jsonl
-            .iter()
-            .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("http"));
-        if has_http {
+        if is_complete(&run) {
             return Ok(run);
         }
         last = Some(run);
@@ -366,6 +377,16 @@ where
         }
     }
     Ok(last.expect("guardian run"))
+}
+
+fn has_http_jsonl(run: &GuardianRun) -> bool {
+    run.jsonl
+        .iter()
+        .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("http"))
+}
+
+fn child_stdout_ok(run: &GuardianRun) -> bool {
+    run.exit_code == 0 && !run.stdout.trim().is_empty()
 }
 
 pub fn parse_jsonl(stderr: &str) -> Vec<Value> {

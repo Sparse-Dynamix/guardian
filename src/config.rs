@@ -92,8 +92,7 @@ fn default_ignored_ports() -> Vec<u16> {
 
 fn expand_tilde(path: &str) -> Result<PathBuf> {
     if let Some(rest) = path.strip_prefix("~/") {
-        let home = dirs::home_dir()
-            .context("home directory not found (required for ~ paths)")?;
+        let home = dirs::home_dir().context("home directory not found (required for ~ paths)")?;
         Ok(home.join(rest))
     } else if path == "~" {
         dirs::home_dir().context("home directory not found (required for ~ path)")
@@ -128,9 +127,7 @@ pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
 
     builder = builder.add_source(Environment::with_prefix("GUARDIAN").separator("_"));
 
-    let cfg = builder
-        .build()
-        .context("failed to build configuration")?;
+    let cfg = builder.build().context("failed to build configuration")?;
     cfg.try_deserialize()
         .context("failed to deserialize configuration")
 }
@@ -232,6 +229,30 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    fn test_echo_program() -> &'static str {
+        if cfg!(windows) {
+            "cmd.exe"
+        } else {
+            "echo"
+        }
+    }
+
+    fn test_echo_args() -> Vec<&'static str> {
+        if cfg!(windows) {
+            vec!["/C", "echo", "hi"]
+        } else {
+            vec!["hi"]
+        }
+    }
+
+    fn test_true_args() -> Vec<&'static str> {
+        if cfg!(windows) {
+            vec!["cmd.exe", "/C", "exit", "0"]
+        } else {
+            vec!["true"]
+        }
+    }
+
     #[test]
     fn cli_overrides_file() {
         let dir = TempDir::new().unwrap();
@@ -241,38 +262,44 @@ mod tests {
         writeln!(f, "body_limit = 128").unwrap();
         writeln!(f, "port = 9000").unwrap();
 
-        let cli = Cli::try_parse_from([
+        let mut argv = vec![
             "guardian",
             "--config",
             cfg_path.to_str().unwrap(),
             "--body-limit",
             "512",
             "--",
-            "echo",
-            "hi",
-        ])
-        .unwrap();
+            test_echo_program(),
+        ];
+        argv.extend(test_echo_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
         assert_eq!(settings.body_limit, 512);
         assert_eq!(settings.port, Some(9000));
         assert_eq!(
             settings.program,
-            which::which("echo").unwrap().to_string_lossy()
+            which::which(test_echo_program()).unwrap().to_string_lossy()
         );
-        assert_eq!(settings.args, vec!["hi".to_string()]);
+        assert_eq!(
+            settings.args,
+            test_echo_args()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn resolve_program_bare_name() {
-        let resolved = resolve_program("echo").unwrap();
+        let resolved = resolve_program(test_echo_program()).unwrap();
         assert!(resolved.is_absolute());
         assert!(resolved.exists());
     }
 
     #[test]
     fn resolve_program_absolute_path() {
-        let echo = which::which("echo").unwrap();
+        let echo = which::which(test_echo_program()).unwrap();
         let resolved = resolve_program(echo.to_str().unwrap()).unwrap();
         assert_eq!(resolved, echo);
     }
@@ -310,7 +337,9 @@ mod tests {
     #[test]
     fn default_filter_from_settings_when_unset() {
         use clap::Parser;
-        let cli = Cli::try_parse_from(["guardian", "--", "true"]).unwrap();
+        let mut argv = vec!["guardian", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.filter.contains("includes(port)"));
         assert!(settings.filter.contains("22"));
@@ -318,14 +347,9 @@ mod tests {
 
     #[test]
     fn ignored_ports_cli_override() {
-        let cli = Cli::try_parse_from([
-            "guardian",
-            "--ignored-ports",
-            "22,8080",
-            "--",
-            "true",
-        ])
-        .unwrap();
+        let mut argv = vec!["guardian", "--ignored-ports", "22,8080", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.filter.contains("8080"));
@@ -339,14 +363,9 @@ mod tests {
         let mut f = fs::File::create(&cfg_path).unwrap();
         writeln!(f, "ignored_ports = [22, 8080]").unwrap();
 
-        let cli = Cli::try_parse_from([
-            "guardian",
-            "--config",
-            cfg_path.to_str().unwrap(),
-            "--",
-            "true",
-        ])
-        .unwrap();
+        let mut argv = vec!["guardian", "--config", cfg_path.to_str().unwrap(), "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.filter.contains("8080"));
@@ -360,19 +379,11 @@ mod tests {
         let mut f = fs::File::create(&cfg_path).unwrap();
         writeln!(f, "bind = \"10.0.0.1\"").unwrap();
 
-        let cli = Cli::try_parse_from([
-            "guardian",
-            "--config",
-            cfg_path.to_str().unwrap(),
-            "--",
-            "true",
-        ])
-        .unwrap();
+        let mut argv = vec!["guardian", "--config", cfg_path.to_str().unwrap(), "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
-        assert_eq!(
-            settings.bind,
-            Ipv4Addr::new(10, 0, 0, 1)
-        );
+        assert_eq!(settings.bind, Ipv4Addr::new(10, 0, 0, 1));
     }
 }

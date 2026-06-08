@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { $ } from "zx";
 import { requirePlatform } from "./lib/guard.ts";
 import { applyJdkEnv, ensurePortableJdk } from "./lib/jdk.ts";
@@ -35,6 +36,7 @@ process.env.RUSTC_WRAPPER = wrapper;
 process.env.LLVM_PROFILE_FILE = path.join(
   REPO_ROOT,
   "target",
+  "llvm-cov-target",
   "guardian-%p.profraw",
 );
 
@@ -44,3 +46,24 @@ process.env.PATH = await prepareMacSmokePath(
 );
 
 await $`cargo llvm-cov test --no-rustc-wrapper --features ws-smoke --fail-under-lines 90 -- --test-threads=1`;
+
+const covTarget = path.join(REPO_ROOT, "target", "llvm-cov-target");
+fs.rmSync(path.join(covTarget, "debug"), { recursive: true, force: true });
+fs.mkdirSync(covTarget, { recursive: true });
+fs.cpSync(
+  path.join(REPO_ROOT, "target", "debug"),
+  path.join(covTarget, "debug"),
+  {
+    recursive: true,
+  },
+);
+for (const entry of fs.readdirSync(path.join(REPO_ROOT, "target"))) {
+  if (entry.startsWith("guardian-") && entry.endsWith(".profraw")) {
+    fs.copyFileSync(
+      path.join(REPO_ROOT, "target", entry),
+      path.join(covTarget, entry),
+    );
+  }
+}
+
+await $`cargo llvm-cov report --text --ignore-filename-regex ${"target/patch|src/bin/ws_smoke.rs|build.rs"} --fail-under-lines 90`;

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --import tsx
-import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { $ } from "zx";
 import { prepareMacSmokePath, signGuardianBin } from "./lib/mac-codesign.ts";
 
 const args = process.argv.slice(2);
@@ -18,8 +18,8 @@ if (!delegate) {
   );
 }
 
-const result = spawnSync(delegate, args, { stdio: "inherit" });
-const status = result.status ?? 1;
+const result = $.sync({ stdio: "inherit", nothrow: true })`${delegate} ${args}`;
+const status = result.exitCode ?? 1;
 
 if (status === 0 && out && path.basename(out)) {
   const base = path.basename(out);

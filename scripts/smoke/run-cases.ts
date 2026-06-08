@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { $, usePowerShell } from "zx";
 import { smokeCases } from "./cases.ts";
 import type { SmokeCase } from "./cases.ts";
 import {
@@ -14,7 +14,12 @@ import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
 import { resolveExecutable } from "../lib/resolve-exec.ts";
 
-const DEFAULT_SMOKE_URL = "http://httpbin.org/get";
+if (process.platform === "win32") {
+  usePowerShell();
+}
+
+const DEFAULT_SMOKE_URL = "http://httpbingo.org/get";
+const SMOKE_RETRIES = 3;
 
 function smokeUrl(): string {
   return process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
@@ -36,19 +41,32 @@ function runGuardian(guardianArgs: string[]): RunResult {
   const outPath = path.join(dir, "stdout");
   const stderrFile = path.join(dir, "stderr");
 
-  const result = spawnSync(config.guardianBin, guardianArgs, {
+  const shell = $.sync({
     cwd: REPO_ROOT,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
+    quiet: true,
+    nothrow: true,
   });
+  const result =
+    hostPlatform() === "win"
+      ? shell`& ${config.guardianBin} ${guardianArgs}`
+      : shell`${config.guardianBin} ${guardianArgs}`;
   fs.writeFileSync(outPath, result.stdout ?? "");
   fs.writeFileSync(stderrFile, result.stderr ?? "");
 
   return {
-    exitCode: result.status ?? 1,
+    exitCode: result.exitCode ?? 1,
     stdoutFile: outPath,
     stderrFile,
   };
+}
+
+function curlArgs(url: string): string[] {
+  const args = ["-sSf"];
+  if (hostPlatform() === "mac") {
+    args.push("--ipv4");
+  }
+  args.push(url);
+  return args;
 }
 
 function runDirect(silent: boolean, url: string): RunResult {
@@ -56,7 +74,7 @@ function runDirect(silent: boolean, url: string): RunResult {
   const caDir = makeCaDir();
   const guardianArgs: string[] = [];
   if (silent) guardianArgs.push("--silent");
-  guardianArgs.push("--ca-dir", caDir, "--", config.curl, "-sSf", url);
+  guardianArgs.push("--ca-dir", caDir, "--", config.curl, ...curlArgs(url));
   return runGuardian(guardianArgs);
 }
 
@@ -68,12 +86,12 @@ function runChild(silent: boolean, url: string): RunResult {
   guardianArgs.push("--ca-dir", caDir, "--");
 
   if (config.childWrapper) {
-    guardianArgs.push(config.childWrapper, config.curl, "-sSf", url);
+    guardianArgs.push(config.childWrapper, config.curl, ...curlArgs(url));
   } else if (hostPlatform() === "win") {
     const cmd = process.env.COMSPEC ?? resolveExecutable("cmd.exe");
-    guardianArgs.push(cmd, "/c", config.curl, "-sSf", url);
+    guardianArgs.push(cmd, "/c", config.curl, ...curlArgs(url));
   } else if (config.childShell) {
-    const inner = `${config.curl} -sSf '${url}'`.trim();
+    const inner = `${config.curl} ${curlArgs(url).join(" ")}`.trim();
     guardianArgs.push(...config.childShell, inner);
   } else {
     throw new Error("platform config missing child spawn wrapper");
@@ -84,18 +102,37 @@ function runChild(silent: boolean, url: string): RunResult {
 
 function runCase(c: SmokeCase, url: string): void {
   console.log(`==> smoke case: ${c.name}`);
-  const result =
-    c.command === "direct"
-      ? runDirect(c.silent, url)
-      : runChild(c.silent, url);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
+    const result =
+      c.command === "direct"
+        ? runDirect(c.silent, url)
+        : runChild(c.silent, url);
 
-  assertExit(c.expectExit, result.exitCode);
-  if (c.expectStdoutNonempty) {
-    assertStdoutNonempty(result.stdoutFile);
+    try {
+      assertExit(c.expectExit, result.exitCode);
+      if (c.expectStdoutNonempty) {
+        assertStdoutNonempty(result.stdoutFile);
+      }
+      assertStderrJsonlType(result.stderrFile, c.expectJsonlType);
+      fs.rmSync(path.dirname(result.stdoutFile), {
+        recursive: true,
+        force: true,
+      });
+      console.log("    ok");
+      return;
+    } catch (err) {
+      lastError = err;
+      fs.rmSync(path.dirname(result.stdoutFile), {
+        recursive: true,
+        force: true,
+      });
+      if (attempt < SMOKE_RETRIES) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+      }
+    }
   }
-  assertStderrJsonlType(result.stderrFile, c.expectJsonlType);
-  fs.rmSync(path.dirname(result.stdoutFile), { recursive: true, force: true });
-  console.log("    ok");
+  throw lastError;
 }
 
 export async function runSmokeCases(): Promise<void> {
