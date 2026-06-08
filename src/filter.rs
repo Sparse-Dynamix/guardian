@@ -12,7 +12,11 @@ pub fn connect_filter_from_ports(ports: &[u16]) -> String {
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    format!("(sa_family == 2 || sa_family == 0) && ![{list}].includes(port)")
+    if cfg!(target_os = "windows") {
+        format!("![{list}].includes(port)")
+    } else {
+        format!("(sa_family == 2 || sa_family == 0) && ![{list}].includes(port)")
+    }
 }
 
 #[cfg(test)]
