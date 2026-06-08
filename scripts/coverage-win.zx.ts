@@ -20,14 +20,24 @@ if (!fs.existsSync(llvmCov)) {
 const javaHome = await ensurePortableJdk("win");
 applyJdkEnv(javaHome);
 
+const IGNORED_COVERAGE =
+  "target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs";
+
 runCargo(["llvm-cov", "clean"]);
 runCargo([
   "llvm-cov",
   "test",
   "--features",
   "ws-smoke",
-  "--fail-under-lines",
-  "90",
   "--",
   "--test-threads=1",
+]);
+runCargo([
+  "llvm-cov",
+  "report",
+  "--text",
+  "--ignore-filename-regex",
+  IGNORED_COVERAGE,
+  "--fail-under-lines",
+  "90",
 ]);

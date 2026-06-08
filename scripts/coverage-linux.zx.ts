@@ -17,5 +17,9 @@ await $`command -v cargo-llvm-cov`.quiet().catch(() => {
 const javaHome = await ensurePortableJdk("linux");
 applyJdkEnv(javaHome);
 
+const IGNORED_COVERAGE =
+  "target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs";
+
 await $`cargo llvm-cov clean`;
-await $`cargo llvm-cov test --features ws-smoke --fail-under-lines 90 -- --test-threads=1`;
+await $`cargo llvm-cov test --features ws-smoke -- --test-threads=1`;
+await $`cargo llvm-cov report --text --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90`;

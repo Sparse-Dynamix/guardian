@@ -37,23 +37,23 @@ use crate::ui::Ui;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-struct PrefixedStderr {
-    inner: std::io::Stderr,
+struct PrefixedWriter<W: Write> {
+    inner: W,
     prefix: String,
     pending_prefix: bool,
 }
 
-impl PrefixedStderr {
-    fn new(prefix: String) -> Self {
+impl<W: Write> PrefixedWriter<W> {
+    fn new(inner: W, prefix: String) -> Self {
         Self {
-            inner: std::io::stderr(),
+            inner,
             prefix,
             pending_prefix: true,
         }
     }
 }
 
-impl Write for PrefixedStderr {
+impl<W: Write> Write for PrefixedWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut written = 0;
         for chunk in buf.split(|&b| b == b'\n') {
@@ -91,7 +91,10 @@ fn init_tracing(verbose: bool, settings: &Settings) {
         EnvFilter::new("off")
     };
 
-    let writer = Mutex::new(PrefixedStderr::new(settings.tracing_prefix.clone()));
+    let writer = Mutex::new(PrefixedWriter::new(
+        std::io::stderr(),
+        settings.tracing_prefix.clone(),
+    ));
     let use_ansi = !settings.no_color;
 
     tracing_subscriber::fmt()
@@ -360,5 +363,22 @@ mod tests {
             exit_code_from_run(Err(anyhow::anyhow!("boom"))),
             ExitCode::FAILURE
         );
+    }
+
+    #[test]
+    fn prefixed_writer_inserts_prefix_per_line() {
+        use super::PrefixedWriter;
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = PrefixedWriter::new(&mut buf, "pfx: ".into());
+            writer.write_all(b"one\n").unwrap();
+            writer.write_all(b"two").unwrap();
+            writer.flush().unwrap();
+        }
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("pfx: one"));
+        assert!(out.contains("pfx: two"));
     }
 }

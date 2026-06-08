@@ -431,6 +431,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_trust_stores_prefers_subcommand_stores() {
+        use crate::cli::{Cli, Commands, SystemOpts};
+        let cli = Cli {
+            command: Some(Commands::CheckSystem(SystemOpts {
+                stores: Some(vec!["java".into()]),
+            })),
+            ..Cli::try_parse_from(["guardian", "check-system"]).unwrap()
+        };
+        let stores = resolve_trust_stores(
+            &cli,
+            match &cli.command {
+                Some(Commands::CheckSystem(opts)) => Some(opts),
+                _ => None,
+            },
+        );
+        assert_eq!(stores, vec!["java".to_string()]);
+    }
+
+    #[test]
     fn no_color_from_cli() {
         let mut argv = vec!["guardian", "--no-color", "--"];
         argv.extend(test_true_args());

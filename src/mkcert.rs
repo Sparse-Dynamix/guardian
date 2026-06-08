@@ -75,4 +75,19 @@ mod tests {
             MKCERT_BYTES.len()
         );
     }
+
+    #[test]
+    fn test_env_override_skips_embedded_extract() {
+        let dir = TempDir::new().unwrap();
+        let custom = dir.path().join("custom-mkcert");
+        std::fs::write(&custom, b"stub").unwrap();
+        let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
+        std::env::set_var("GUARDIAN_MKCERT_TEST", &custom);
+        let path = executable_path(dir.path()).unwrap();
+        match prev {
+            Some(value) => std::env::set_var("GUARDIAN_MKCERT_TEST", value),
+            None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
+        }
+        assert_eq!(path, custom);
+    }
 }

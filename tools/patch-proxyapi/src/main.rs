@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[path = "../../../build/apply_proxyapi_patch.rs"]
+#[path = "../../../scripts/apply_proxyapi_patch.rs"]
 mod apply_proxyapi_patch;
 
 fn main() {

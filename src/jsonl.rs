@@ -165,3 +165,30 @@ pub async fn run_sink(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn write_event_serializes_error() {
+        let event = ProxyEvent::Error {
+            message: "boom".into(),
+        };
+        let mut buf = Vec::new();
+        write_event(&mut buf, &event, 256).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(line.contains("\"type\":\"error\""));
+        assert!(line.contains("boom"));
+    }
+
+    #[test]
+    fn write_event_writes_to_cursor() {
+        let event = ProxyEvent::WebSocketClosed { conn_id: 7 };
+        let mut buf = Cursor::new(Vec::new());
+        write_event(&mut buf, &event, 256).unwrap();
+        let line = String::from_utf8(buf.into_inner()).unwrap();
+        assert!(line.contains("websocket_close"));
+    }
+}

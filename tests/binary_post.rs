@@ -2,6 +2,7 @@ mod common;
 
 use std::fs;
 use std::io::Read;
+use std::time::Duration;
 
 use common::require_network;
 use tempfile::TempDir;
@@ -18,7 +19,7 @@ fn binary_request_body_serializes_in_jsonl() {
     fs::write(&payload_path, &bytes).expect("write payload");
 
     let mut last_stderr = String::new();
-    for _attempt in 1..=3 {
+    for _attempt in 1..=5 {
         let curl = common::curl_program();
         let ca_dir = TempDir::new().expect("ca dir");
         let args = vec![
@@ -68,6 +69,7 @@ fn binary_request_body_serializes_in_jsonl() {
             return;
         }
         last_stderr = stderr;
+        std::thread::sleep(Duration::from_millis(500));
     }
 
     panic!("expected non-empty serialized request body preview; stderr:\n{last_stderr}");

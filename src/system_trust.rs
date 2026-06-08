@@ -225,6 +225,14 @@ pub fn run_check_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxyapi::ca::Ssl;
+    use tempfile::TempDir;
+
+    fn generated_ca_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Ssl::load_or_generate(dir.path()).unwrap();
+        dir
+    }
 
     #[test]
     fn parse_stores_defaults_when_empty() {
@@ -236,5 +244,201 @@ mod tests {
     fn parse_stores_subset() {
         let stores = TrustStore::parse_all(&["system".into()]);
         assert_eq!(stores, vec![TrustStore::System]);
+    }
+
+    #[test]
+    fn parse_stores_ignores_unknown_and_duplicates() {
+        let stores = TrustStore::parse_all(&[
+            "system".into(),
+            "bogus".into(),
+            "system".into(),
+            "java".into(),
+        ]);
+        assert_eq!(stores, vec![TrustStore::System, TrustStore::Java]);
+    }
+
+    #[test]
+    fn default_trust_stores_lists_all() {
+        assert_eq!(default_trust_stores().len(), 3);
+    }
+
+    #[test]
+    fn ca_fingerprint_and_name_match_generated_ca() {
+        let dir = generated_ca_dir();
+        let fp = ca_sha256_fingerprint(dir.path()).unwrap();
+        assert_eq!(fp.len(), 32);
+        let name = ca_unique_name(dir.path()).unwrap();
+        assert!(name.starts_with("mkcert development CA "));
+    }
+
+    #[test]
+    fn check_system_store_returns_false_for_fresh_ca() {
+        let dir = generated_ca_dir();
+        assert!(!check_system_store(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn check_nss_store_returns_false_without_profiles() {
+        let dir = generated_ca_dir();
+        assert!(!check_nss_store(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn check_java_store_without_java_home_returns_false() {
+        let dir = generated_ca_dir();
+        let prev = std::env::var_os("JAVA_HOME");
+        std::env::remove_var("JAVA_HOME");
+        let result = check_java_store(dir.path()).unwrap();
+        if let Some(value) = prev {
+            std::env::set_var("JAVA_HOME", value);
+        }
+        assert!(!result);
+    }
+
+    #[test]
+    fn is_installed_false_when_ca_missing() {
+        let dir = TempDir::new().unwrap();
+        assert!(!is_installed(dir.path(), &[TrustStore::System]).unwrap());
+    }
+
+    #[test]
+    fn is_store_installed_false_for_missing_ca() {
+        let dir = TempDir::new().unwrap();
+        assert!(!is_store_installed(TrustStore::System, dir.path()).unwrap());
+    }
+
+    #[test]
+    fn run_check_system_warns_when_ca_missing() {
+        let dir = TempDir::new().unwrap();
+        let ui = crate::ui::Ui::new(true);
+        assert!(!run_check_system(dir.path(), &[TrustStore::System], &ui).unwrap());
+    }
+
+    #[test]
+    fn run_check_system_reports_uninstalled_stores() {
+        let dir = generated_ca_dir();
+        let ui = crate::ui::Ui::new(true);
+        assert!(!run_check_system(dir.path(), &[TrustStore::System], &ui).unwrap());
+    }
+
+    #[test]
+    fn list_subdirs_returns_directories_only() {
+        let base = TempDir::new().unwrap();
+        std::fs::create_dir(base.path().join("child")).unwrap();
+        std::fs::write(base.path().join("file.txt"), b"x").unwrap();
+        let dirs = list_subdirs(base.path().to_str().unwrap());
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].ends_with("child"));
+    }
+
+    #[test]
+    fn list_subdirs_missing_base_returns_empty() {
+        assert!(list_subdirs("/nonexistent/guardian-nss-profiles").is_empty());
+    }
+
+    #[test]
+    fn check_nss_store_runs_when_certutil_available() {
+        if which::which("certutil").is_err() {
+            eprintln!("skipping: certutil not installed");
+            return;
+        }
+        let dir = generated_ca_dir();
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".pki/nssdb")).unwrap();
+        std::fs::create_dir_all(home.path().join(".mozilla/firefox/abc.default")).unwrap();
+        std::fs::create_dir_all(home.path().join("snap/chromium/current/.pki/nssdb")).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+        assert!(!check_nss_store(dir.path()).unwrap());
+        assert!(!is_store_installed(TrustStore::Nss, dir.path()).unwrap());
+        if let Some(value) = prev_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn check_java_store_falls_back_to_path_keytool() {
+        let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
+        let keytool = if cfg!(windows) {
+            jdk.join("bin/keytool.exe")
+        } else {
+            jdk.join("bin/keytool")
+        };
+        if !keytool.is_file() {
+            return;
+        }
+
+        let dir = generated_ca_dir();
+        let prev_home = std::env::var_os("JAVA_HOME");
+        let prev_path = std::env::var_os("PATH");
+        std::env::remove_var("JAVA_HOME");
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", jdk.join("bin").display(), "/usr/bin"),
+        );
+        assert!(!check_java_store(dir.path()).unwrap());
+        if let Some(value) = prev_home {
+            std::env::set_var("JAVA_HOME", value);
+        } else {
+            std::env::remove_var("JAVA_HOME");
+        }
+        if let Some(value) = prev_path {
+            std::env::set_var("PATH", value);
+        }
+    }
+
+    #[test]
+    fn check_java_store_runs_when_portable_jdk_available() {
+        let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
+        let keytool = if cfg!(windows) {
+            jdk.join("bin/keytool.exe")
+        } else {
+            jdk.join("bin/keytool")
+        };
+        if !keytool.is_file() {
+            eprintln!("skipping: portable JDK not found at .cache/jdk-17");
+            return;
+        }
+
+        let dir = generated_ca_dir();
+        let prev = std::env::var_os("JAVA_HOME");
+        std::env::set_var("JAVA_HOME", &jdk);
+        assert!(!check_java_store(dir.path()).unwrap());
+        assert!(!is_store_installed(TrustStore::Java, dir.path()).unwrap());
+        if let Some(value) = prev {
+            std::env::set_var("JAVA_HOME", value);
+        } else {
+            std::env::remove_var("JAVA_HOME");
+        }
+    }
+
+    #[test]
+    fn is_installed_requires_all_requested_stores() {
+        let dir = generated_ca_dir();
+        assert!(!is_installed(dir.path(), &[TrustStore::System, TrustStore::Java]).unwrap());
+    }
+
+    #[test]
+    fn is_store_installed_dispatches_java_store() {
+        let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
+        let keytool = if cfg!(windows) {
+            jdk.join("bin/keytool.exe")
+        } else {
+            jdk.join("bin/keytool")
+        };
+        if !keytool.is_file() {
+            return;
+        }
+        let dir = generated_ca_dir();
+        let prev = std::env::var_os("JAVA_HOME");
+        std::env::set_var("JAVA_HOME", &jdk);
+        assert!(!is_store_installed(TrustStore::Java, dir.path()).unwrap());
+        if let Some(value) = prev {
+            std::env::set_var("JAVA_HOME", value);
+        } else {
+            std::env::remove_var("JAVA_HOME");
+        }
     }
 }

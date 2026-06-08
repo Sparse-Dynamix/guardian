@@ -120,4 +120,20 @@ mod tests {
         assert!(line.contains('\x1b'), "expected ANSI escapes");
         control::unset_override();
     }
+
+    #[test]
+    fn message_helpers_write_without_panic() {
+        let ui = Ui::new(true);
+        assert!(!ui.color_enabled());
+        ui.warn("warn");
+        ui.error("error");
+        ui.info("info");
+        ui.success("success");
+    }
+
+    #[test]
+    fn color_enabled_reflects_setting() {
+        let ui = Ui::new(false);
+        assert!(ui.color_enabled());
+    }
 }
