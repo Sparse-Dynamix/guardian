@@ -8,7 +8,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::config::Settings;
 
-const PROXELAR_CA: &str = "proxelar-ca.pem";
+pub const ROOT_CA_PEM: &str = "rootCA.pem";
 
 /// PEM path env vars pointing at the combined CA bundle.
 const PEM_ENV_VARS: &[&str] = &[
@@ -55,17 +55,17 @@ impl CaTrust {
         fs::create_dir_all(&self.caroot)
             .with_context(|| format!("failed to create CA directory {}", self.caroot.display()))?;
 
-        let proxelar_ca = self.caroot.join(PROXELAR_CA);
-        if !proxelar_ca.exists() {
+        let root_ca = self.caroot.join(ROOT_CA_PEM);
+        if !root_ca.exists() {
             anyhow::bail!(
-                "Proxelar CA not found at {}; call Ssl::load_or_generate first",
-                proxelar_ca.display()
+                "Guardian CA not found at {}; call Ssl::load_or_generate first",
+                root_ca.display()
             );
         }
 
         let system_pem = load_system_roots_pem()?;
-        let proxelar_pem = fs::read(&proxelar_ca)
-            .with_context(|| format!("failed to read {}", proxelar_ca.display()))?;
+        let proxelar_pem =
+            fs::read(&root_ca).with_context(|| format!("failed to read {}", root_ca.display()))?;
         let mut bundle = system_pem;
         if !bundle.is_empty() && !bundle.ends_with(b"\n") {
             bundle.push(b'\n');
@@ -74,7 +74,7 @@ impl CaTrust {
         fs::write(&self.ca_bundle, &bundle)
             .with_context(|| format!("failed to write {}", self.ca_bundle.display()))?;
 
-        self.java_truststore = build_java_truststore(&self.caroot, &proxelar_ca, settings).ok();
+        self.java_truststore = build_java_truststore(&self.caroot, &root_ca, settings).ok();
         Ok(())
     }
 
@@ -212,11 +212,7 @@ fn find_keytool() -> Option<PathBuf> {
     })
 }
 
-fn build_java_truststore(
-    caroot: &Path,
-    proxelar_ca: &Path,
-    settings: &Settings,
-) -> Result<PathBuf> {
+fn build_java_truststore(caroot: &Path, root_ca: &Path, settings: &Settings) -> Result<PathBuf> {
     let keytool = find_keytool().context("keytool not found")?;
     let password = &settings.java_truststore_password;
     let out = caroot.join(&settings.java_truststore_name);
@@ -253,9 +249,9 @@ fn build_java_truststore(
         .args([
             "-importcert",
             "-file",
-            proxelar_ca.to_str().unwrap(),
+            root_ca.to_str().unwrap(),
             "-alias",
-            "guardian-proxelar",
+            "guardian-root-ca",
             "-keystore",
             tmp.to_str().unwrap(),
             "-storepass",

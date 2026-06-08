@@ -107,7 +107,7 @@ guardian/
 
 ### `config.rs` / `cli.rs`
 
-Layered config (lowest → highest): shipped `config/guardian.toml` → `~/.config/guardian/guardian.toml` → `./guardian.toml` → `GUARDIAN_*` env → CLI flags.
+Layered config (lowest → highest): shipped `config/guardian.toml` → `~/.guardian/guardian.toml` → `./guardian.toml` → `GUARDIAN_*` env → CLI flags.
 
 CLI fields that map to file settings use `Option<T>` (no clap defaults) so file values apply when flags are omitted.
 
@@ -130,7 +130,7 @@ Wrappers for `frida_session_enable_child_gating_sync` and GObject signals `child
 
 ### `ca.rs`
 
-Builds `guardian-ca-bundle.pem` (system roots + `proxelar-ca.pem`), optional Java PKCS12 truststore, injects PEM env vars into child + `env_inject.js` for exec descendants.
+Builds `guardian-ca-bundle.pem` (system roots + `rootCA.pem`), optional Java PKCS12 truststore, injects PEM env vars into child + `env_inject.js` for exec descendants.
 
 ### `jsonl.rs`
 
@@ -239,11 +239,78 @@ guardian -- sh -c 'curl -sSf https://httpbin.org/get'
 
 Bare command names are resolved via `PATH` before Frida spawn; absolute and relative paths still work. Default connect filter intercepts all IPv4 TCP except ports listed in `ignored_ports` (`config/guardian.toml`, `--ignored-ports`, or built-in defaults in `filter::DEFAULT_IGNORED_PORTS`).
 
+## System CA trust (`install-system` / `remove-system` / `check-system`)
+
+- **Install/remove** orchestrate an embedded [mkcert](https://github.com/FiloSottile/mkcert) binary (`include_bytes!` from `build.rs` download into `OUT_DIR`). Runtime extract: `~/.guardian/bin/mkcert[.exe]`. `CAROOT=<ca_dir>`; CA files `rootCA.pem` / `rootCA-key.pem` (patched `proxyapi` `Ssl::load_or_generate`).
+- **Admin gate** — `privilege::user::privileged()` at start of install/remove only; never for `check-system` or run mode.
+- **check-system** — read-only verification in `system_trust.rs` (system roots fingerprint, optional `certutil` NSS, optional `keytool` Java). Exit `0` if all requested stores pass.
+- **Run-mode warnings** — `ui::warn` capture disclaimer always; trust hint when `is_installed` is false.
+- **Store selection** — `--stores` / `GUARDIAN_TRUST_STORES` / config `trust_stores`; forwarded to mkcert as `TRUST_STORES` on install/remove.
+- See [`NOTICES`](NOTICES) for mkcert BSD-3-Clause attribution.
+
+## Colored stderr (`ui.rs` + `colored`)
+
+Guardian-owned stderr only (not child or mkcert output):
+
+| Stream | Color |
+|--------|-------|
+| JSONL (`jsonl::run_sink`) | Light blue |
+| User warnings / advisories | Yellow |
+| User errors (e.g. admin required) | Red |
+| Tracing (`-v`) | Level-based ANSI via `tracing_subscriber` |
+
+Disable: `--no-color`, `no_color = true` in config, or `GUARDIAN_NO_COLOR`. Sets `colored::control::set_override(false)`.
+
+## Permissions
+
+Guardian uses Frida **spawn** (not attach-to-existing). Requirements below are per OS.
+
+### Linux
+
+Frida injects via `ptrace`. On a normal host, spawning a same-user program works with the default Yama setting (`kernel.yama.ptrace_scope=1` on Ubuntu/Debian).
+
+| Condition | What happens |
+|-----------|--------------|
+| Spawn same-user child (guardian’s normal path) | Works at `ptrace_scope` **1** (parent→descendant is allowed) |
+| `ptrace_scope` **0** | Any same-uid, dumpable process can be attached |
+| `ptrace_scope` **2** | Only root (`CAP_SYS_PTRACE`) can ptrace — run guardian as root, or temporarily `sudo sysctl kernel.yama.ptrace_scope=0` |
+| `ptrace_scope` **3** | Ptrace disabled system-wide (cannot be changed back) |
+| Target is another user’s process | Root required |
+| Target exec’d a setuid/setgid binary (or dropped privs via `setuid`) | Process is non-dumpable; ptrace fails unless root or the target calls `prctl(PR_SET_DUMPABLE, 1)` |
+| Inside Docker/Podman with default seccomp | `ptrace` is blocked — start the container with `--security-opt seccomp=unconfined` (see [Frida Linux/Docker docs](https://frida.re/docs/examples/linux/)) |
+
+Check current value: `sysctl kernel.yama.ptrace_scope` or `cat /proc/sys/kernel/yama/ptrace_scope`.
+
+### macOS
+
+Frida needs `task_for_pid` to spawn/inject. **Root is not required** for normal user binaries.
+
+| Condition | What happens |
+|-----------|--------------|
+| First run from Terminal.app | `taskgate` prompts to allow debugging — approve once per guardian binary |
+| Headless / SSH (no prompt) | `sudo security authorizationdb write system.privilege.taskport allow` (weakens security; see [Frida troubleshooting](https://frida.re/docs/troubleshooting/)) |
+| Target in SIP-protected paths (`/System`, `/usr` except `/usr/local`, platform binaries) | Blocked while SIP is enabled — not typical for `curl`/`sh` in `$PATH` |
+| Target has **Hardened Runtime** + library validation (most App Store / notarized apps) | Frida’s agent cannot load unless the target has `com.apple.security.cs.disable-library-validation` |
+| Release-signed target without `com.apple.security.get-task-allow` | Spawn/attach denied — re-sign the target with that entitlement, or use a debug build |
+
+Prebuilt `libfrida-core` from Frida releases is already codesigned.
+
+### Windows
+
+Injection requires the **same or higher integrity level** as the target. Guardian does not need admin for normal (medium-IL) programs.
+
+| Condition | What happens |
+|-----------|--------------|
+| Guardian and target both non-elevated (medium IL) | Works out of the box |
+| Target is elevated (high IL, “Run as administrator”) | Run guardian elevated too |
+| Target is **Protected Process Light** (PPL) or anti-malware protected | Injection blocked regardless of admin |
+| Third-party AV/EDR | May block DLL injection into the child |
+
 ## Known limitations
 
 - IPv6 `connect()` not hooked; IPv6 `--bind` rejected
 - Certificate pinning / custom trust stores block MITM
-- Frida permissions required (see README permissions tables)
+- Frida permissions required (see Permissions above)
 - Go HTTPS on Windows uses system store, not PEM env vars
 - Non-HTTP TCP tunneled but not logged in JSONL
 - QUIC/UDP not intercepted
@@ -262,8 +329,10 @@ Defaults live in [`config/guardian.toml`](config/guardian.toml) and [`FileSettin
 | `body_limit` | `--body-limit` | `GUARDIAN_BODY_LIMIT` | `256` | JSONL body/frame preview max bytes |
 | `filter` | `--filter` | `GUARDIAN_FILTER` | (unset) | JS connect filter; when unset, built from `ignored_ports` |
 | `ignored_ports` | `--ignored-ports` | — | see `config/guardian.toml` | TCP ports left unhooked when `filter` is unset |
-| `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.proxelar` | Proxelar CA directory |
+| `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.guardian` | Guardian data directory (CA + config) |
 | `silent` | `--silent` | `GUARDIAN_SILENT` | `false` | Suppress JSONL on stderr |
+| `no_color` | `--no-color` | `GUARDIAN_NO_COLOR` | `false` | Disable colored Guardian stderr |
+| `trust_stores` | `--stores` (system subcommands) | `GUARDIAN_TRUST_STORES` | `system,nss,java` | Stores for install/check/remove |
 | — | `--config` | — | — | Extra config file path |
 | — | `-v` | `RUST_LOG` | off | Internal tracing to stderr |
 
@@ -289,7 +358,7 @@ Platform default `filter` when unset: IPv4 TCP except `ignored_ports` (SSH 22, D
 
 ### Not configurable (by design)
 
-- `proxelar-ca.pem` / `.key` — Proxelar `Ssl::load_or_generate` contract
+- `rootCA.pem` / `rootCA-key.pem` — patched `proxyapi` `Ssl::load_or_generate` contract (mkcert-compatible names)
 - `PEM_ENV_VARS` list in `ca.rs` — cross-ecosystem injection contract
 - Frida script templates (`assets/*.js`)
 - Ctrl+C exit code `130`

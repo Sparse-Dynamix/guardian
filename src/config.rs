@@ -5,8 +5,9 @@ use anyhow::{Context, Result};
 use config::{Config, Environment, File};
 use serde::Deserialize;
 
-use crate::cli::{parse_bind_ipv4, Cli};
+use crate::cli::{parse_bind_ipv4, Cli, SystemOpts};
 use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
+use crate::system_trust::default_trust_stores;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -19,6 +20,7 @@ pub struct FileSettings {
     pub ignored_ports: Vec<u16>,
     pub ca_dir: String,
     pub silent: bool,
+    pub no_color: bool,
     pub port_min: u16,
     pub port_max: u16,
     pub proxy_event_channel_capacity: usize,
@@ -32,6 +34,7 @@ pub struct FileSettings {
     pub node_options_append: String,
     pub tracing_prefix: String,
     pub tracing_default_level: String,
+    pub trust_stores: Option<Vec<String>>,
 }
 
 impl Default for FileSettings {
@@ -42,8 +45,9 @@ impl Default for FileSettings {
             body_limit: 256,
             filter: None,
             ignored_ports: default_ignored_ports(),
-            ca_dir: "~/.proxelar".to_string(),
+            ca_dir: "~/.guardian".to_string(),
             silent: false,
+            no_color: false,
             port_min: 1024,
             port_max: 65535,
             proxy_event_channel_capacity: 10_000,
@@ -57,6 +61,7 @@ impl Default for FileSettings {
             node_options_append: "--use-openssl-ca".to_string(),
             tracing_prefix: "guardian: ".to_string(),
             tracing_default_level: "guardian=debug".to_string(),
+            trust_stores: None,
         }
     }
 }
@@ -69,6 +74,7 @@ pub struct Settings {
     pub filter: String,
     pub ca_dir: PathBuf,
     pub silent: bool,
+    pub no_color: bool,
     pub port_min: u16,
     pub port_max: u16,
     pub proxy_event_channel_capacity: usize,
@@ -84,13 +90,14 @@ pub struct Settings {
     pub tracing_default_level: String,
     pub program: String,
     pub args: Vec<String>,
+    pub trust_stores: Vec<String>,
 }
 
 fn default_ignored_ports() -> Vec<u16> {
     DEFAULT_IGNORED_PORTS.to_vec()
 }
 
-fn expand_tilde(path: &str) -> Result<PathBuf> {
+pub fn expand_tilde(path: &str) -> Result<PathBuf> {
     if let Some(rest) = path.strip_prefix("~/") {
         let home = dirs::home_dir().context("home directory not found (required for ~ paths)")?;
         Ok(home.join(rest))
@@ -101,6 +108,10 @@ fn expand_tilde(path: &str) -> Result<PathBuf> {
     }
 }
 
+pub fn default_guardian_home() -> Result<PathBuf> {
+    expand_tilde("~/.guardian")
+}
+
 pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
     let mut builder = Config::builder();
 
@@ -109,11 +120,9 @@ pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
         builder = builder.add_source(File::from(shipped));
     }
 
-    if let Some(dir) = dirs::config_dir() {
-        let user = dir.join("guardian/guardian.toml");
-        if user.exists() {
-            builder = builder.add_source(File::from(user));
-        }
+    let user = expand_tilde("~/.guardian/guardian.toml")?;
+    if user.exists() {
+        builder = builder.add_source(File::from(user));
     }
 
     let cwd = PathBuf::from("guardian.toml");
@@ -161,6 +170,30 @@ pub fn resolve_program(program: &str) -> Result<PathBuf> {
     which::which(program).with_context(|| format!("program '{program}' not found in PATH"))
 }
 
+pub fn resolve_ca_dir(cli: &Cli) -> Result<PathBuf> {
+    let file = load_file_settings(cli.config.as_deref())?;
+    match &cli.ca_dir {
+        Some(dir) => Ok(dir.clone()),
+        None => expand_tilde(&file.ca_dir),
+    }
+}
+
+pub fn resolve_trust_stores(cli: &Cli, opts: Option<&SystemOpts>) -> Vec<String> {
+    if let Some(opts) = opts {
+        if let Some(stores) = &opts.stores {
+            return stores.clone();
+        }
+    }
+    let file = load_file_settings(cli.config.as_deref()).ok();
+    file.and_then(|f| f.trust_stores.clone())
+        .unwrap_or_else(default_trust_stores)
+}
+
+pub fn resolve_no_color(cli: &Cli) -> Result<bool> {
+    let file = load_file_settings(cli.config.as_deref())?;
+    Ok(cli.no_color || file.no_color)
+}
+
 pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
     let file = load_file_settings(cli.config.as_deref())?;
 
@@ -180,11 +213,9 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
                 .unwrap_or(file.ignored_ports);
             connect_filter_from_ports(&ports)
         });
-    let ca_dir = match &cli.ca_dir {
-        Some(dir) => dir.clone(),
-        None => expand_tilde(&file.ca_dir)?,
-    };
+    let ca_dir = resolve_ca_dir(cli)?;
     let silent = cli.silent || file.silent;
+    let no_color = cli.no_color || file.no_color;
 
     let program_raw = cli
         .program
@@ -196,6 +227,11 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         .into_owned();
     let args = cli.program.iter().skip(1).cloned().collect();
 
+    let trust_stores = file
+        .trust_stores
+        .clone()
+        .unwrap_or_else(default_trust_stores);
+
     Ok(Settings {
         bind: parse_bind_ipv4(bind_str)?,
         port,
@@ -203,6 +239,7 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         filter,
         ca_dir,
         silent,
+        no_color,
         port_min: file.port_min,
         port_max: file.port_max,
         proxy_event_channel_capacity: file.proxy_event_channel_capacity,
@@ -218,6 +255,7 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
         tracing_default_level: file.tracing_default_level,
         program,
         args,
+        trust_stores,
     })
 }
 
@@ -330,13 +368,18 @@ mod tests {
     #[test]
     fn expand_tilde_resolves_home_relative_path() {
         let home = dirs::home_dir().expect("home dir");
-        let expanded = expand_tilde("~/proxelar-test").unwrap();
-        assert_eq!(expanded, home.join("proxelar-test"));
+        let expanded = expand_tilde("~/guardian-test").unwrap();
+        assert_eq!(expanded, home.join("guardian-test"));
+    }
+
+    #[test]
+    fn default_ca_dir_is_guardian_home() {
+        let file = FileSettings::default();
+        assert_eq!(file.ca_dir, "~/.guardian");
     }
 
     #[test]
     fn default_filter_from_settings_when_unset() {
-        use clap::Parser;
         let mut argv = vec!["guardian", "--"];
         argv.extend(test_true_args());
         let cli = Cli::try_parse_from(argv).unwrap();
@@ -385,5 +428,14 @@ mod tests {
 
         let settings = resolve_settings(&cli).unwrap();
         assert_eq!(settings.bind, Ipv4Addr::new(10, 0, 0, 1));
+    }
+
+    #[test]
+    fn no_color_from_cli() {
+        let mut argv = vec!["guardian", "--no-color", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.no_color);
     }
 }

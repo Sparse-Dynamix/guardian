@@ -145,6 +145,21 @@ index 23cea08..1929749 100644
  fn is_h2_preface(buffered: &[u8]) -> bool {
      buffered == H2_PREFACE
  }
+diff --git a/src/ca/mod.rs b/src/ca/mod.rs
+index 0000000..0000000 100644
+--- a/src/ca/mod.rs
++++ b/src/ca/mod.rs
+@@ -51,8 +51,8 @@ impl Ssl {
+     pub fn load_or_generate(dir: &Path) -> Result<Self, crate::error::Error> {
+         std::fs::create_dir_all(dir)?;
+ 
+-        let cert_path = dir.join("proxelar-ca.pem");
+-        let key_path = dir.join("proxelar-ca.key");
++        let cert_path = dir.join("rootCA.pem");
++        let key_path = dir.join("rootCA-key.pem");
+ 
+         let (pkey, ca_cert) = if cert_path.exists() && key_path.exists() {
+             tracing::info!("Loading CA certificate from {}", dir.display());
 diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
 index d0849f8..5c146fa 100644
 --- a/src/proxy/mod.rs

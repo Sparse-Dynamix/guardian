@@ -3,6 +3,8 @@ use std::io::{self, Write};
 
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
+
+use crate::ui::Ui;
 use proxyapi::event::ProxyEvent;
 use proxyapi_models::{ProxiedRequest, ProxiedResponse};
 use serde_json::{json, Value};
@@ -145,13 +147,21 @@ pub async fn run_sink(
     mut rx: tokio::sync::mpsc::Receiver<ProxyEvent>,
     silent: bool,
     body_limit: usize,
+    no_color: bool,
 ) -> Result<()> {
+    let ui = Ui::new(no_color);
     while let Some(event) = rx.recv().await {
         if silent {
             continue;
         }
-        let mut stderr = io::stderr().lock();
-        write_event(&mut stderr, &event, body_limit)?;
+        let value = event_to_json(&event, body_limit)?;
+        if let Some(v) = value {
+            let line = serde_json::to_string(&v)?;
+            let colored = ui.jsonl_line(&line);
+            let mut stderr = io::stderr().lock();
+            writeln!(stderr, "{colored}")?;
+            stderr.flush()?;
+        }
     }
     Ok(())
 }

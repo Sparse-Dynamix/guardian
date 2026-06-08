@@ -374,6 +374,7 @@ mod tests {
             filter: "true".to_string(),
             ca_dir: std::path::PathBuf::from("/tmp/guardian-test-ca"),
             silent: false,
+            no_color: true,
             port_min: 1024,
             port_max: 65535,
             proxy_event_channel_capacity: 100,
@@ -389,6 +390,7 @@ mod tests {
             tracing_default_level: "guardian=debug".to_string(),
             program: "true".to_string(),
             args: vec![],
+            trust_stores: vec!["system".into()],
         }
     }
 

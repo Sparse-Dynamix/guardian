@@ -9,7 +9,7 @@
     "coverage": "node --import tsx ./node_modules/zx/build/cli.js scripts/coverage.zx.ts",
     "format:js": "biome format --write",
     "format:rs": "cargo fmt",
-    "format": "npm-run-all --parallel format:js format:rs"
+    "format": "npm-run-all --parallel format:*"
   },
   "repository": {
     "type": "git",
