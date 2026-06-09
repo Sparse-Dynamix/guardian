@@ -13,6 +13,7 @@ fn missing_child_program_exits_with_failure() {
             "--",
             "/nonexistent/guardian-child-binary",
         ])
+        .stdin(std::process::Stdio::null())
         .status()
         .expect("spawn guardian");
     assert!(!status.success());

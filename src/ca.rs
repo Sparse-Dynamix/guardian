@@ -390,6 +390,118 @@ mod tests {
     }
 
     #[test]
+    fn ensure_artifacts_errors_when_root_ca_missing() {
+        use crate::config::Settings;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let settings = Settings {
+            ca_dir: dir.path().to_path_buf(),
+            ca_bundle_name: "guardian-ca-bundle.pem".into(),
+            java_truststore_name: "guardian-java-truststore.p12".into(),
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+            bind: "127.0.0.1".parse().unwrap(),
+            port: None,
+            trypanophobe_filter: None,
+            payload: None,
+            filter: String::new(),
+            no_color: false,
+            filter_timeout_secs: 10,
+            filter_body_limit: 1_048_576,
+            block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
+            port_min: 1024,
+            port_max: 65535,
+            proxy_event_channel_capacity: 10_000,
+            proxy_ready_timeout_secs: 5,
+            proxy_ready_poll_ms: 10,
+            process_poll_interval_ms: 50,
+            tracing_prefix: "guardian: ".into(),
+            tracing_default_level: "guardian=debug".into(),
+            program: String::new(),
+            args: vec![],
+            trust_stores: vec!["system".into()],
+        };
+        let mut trust = CaTrust::from_settings(&settings);
+        let err = trust.ensure_artifacts(&settings).unwrap_err();
+        assert!(err.to_string().contains("Guardian CA not found"));
+    }
+
+    #[test]
+    fn ensure_artifacts_builds_java_truststore_when_jdk_available() {
+        use crate::config::Settings;
+        use proxyapi::ca::Ssl;
+        use tempfile::TempDir;
+
+        let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
+        let keytool = if cfg!(windows) {
+            jdk.join("bin/keytool.exe")
+        } else {
+            jdk.join("bin/keytool")
+        };
+        if !keytool.is_file() {
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        Ssl::load_or_generate(dir.path()).unwrap();
+        let settings = Settings {
+            ca_dir: dir.path().to_path_buf(),
+            ca_bundle_name: "guardian-ca-bundle.pem".into(),
+            java_truststore_name: "guardian-java-truststore.p12".into(),
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+            bind: "127.0.0.1".parse().unwrap(),
+            port: None,
+            trypanophobe_filter: None,
+            payload: None,
+            filter: String::new(),
+            no_color: false,
+            filter_timeout_secs: 10,
+            filter_body_limit: 1_048_576,
+            block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
+            port_min: 1024,
+            port_max: 65535,
+            proxy_event_channel_capacity: 10_000,
+            proxy_ready_timeout_secs: 5,
+            proxy_ready_poll_ms: 10,
+            process_poll_interval_ms: 50,
+            tracing_prefix: "guardian: ".into(),
+            tracing_default_level: "guardian=debug".into(),
+            program: String::new(),
+            args: vec![],
+            trust_stores: vec!["system".into()],
+        };
+        let prev = std::env::var_os("JAVA_HOME");
+        std::env::set_var("JAVA_HOME", &jdk);
+        let mut trust = CaTrust::from_settings(&settings);
+        trust.ensure_artifacts(&settings).unwrap();
+        if let Some(value) = prev {
+            std::env::set_var("JAVA_HOME", value);
+        } else {
+            std::env::remove_var("JAVA_HOME");
+        }
+        assert!(dir.path().join("guardian-java-truststore.p12").is_file());
+        assert!(dir.path().join("guardian-ca-bundle.pem").is_file());
+    }
+
+    #[test]
+    fn env_for_child_skips_node_options_when_flag_already_present() {
+        let trust = CaTrust {
+            caroot: PathBuf::from("/tmp/guardian-ca"),
+            ca_bundle: PathBuf::from("/tmp/guardian-ca/guardian-ca-bundle.pem"),
+            java_truststore: None,
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+        };
+        let env = trust.env_for_child(&[("NODE_OPTIONS".into(), "--use-openssl-ca".into())]);
+        assert!(!env.iter().any(|(k, _)| k == "NODE_OPTIONS"));
+    }
+
+    #[test]
     fn env_pairs_for_injection_serializes_key_values() {
         let trust = CaTrust {
             caroot: PathBuf::from("/tmp/guardian-ca"),

@@ -342,9 +342,24 @@ fn is_stdin_null() -> bool {
     {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileType, FILE_TYPE_CHAR, FILE_TYPE_UNKNOWN,
+        };
+        use windows_sys::Win32::System::Console::GetConsoleMode;
 
         let handle = std::io::stdin().as_raw_handle();
-        handle.is_null() || handle == INVALID_HANDLE_VALUE
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return true;
+        }
+        let file_type = unsafe { GetFileType(handle) };
+        if file_type == FILE_TYPE_UNKNOWN {
+            return true;
+        }
+        if file_type == FILE_TYPE_CHAR {
+            let mut mode = 0u32;
+            return unsafe { GetConsoleMode(handle, &mut mode) == 0 };
+        }
+        false
     }
 }
 
@@ -450,6 +465,13 @@ mod tests {
             expand_tilde("/etc/hosts").unwrap(),
             std::path::PathBuf::from("/etc/hosts")
         );
+    }
+
+    #[test]
+    fn default_guardian_home_expands_tilde() {
+        let home = default_guardian_home().unwrap();
+        assert!(home.ends_with(".guardian"));
+        assert!(!home.to_string_lossy().starts_with('~'));
     }
 
     #[test]
@@ -566,5 +588,114 @@ mod tests {
     fn payload_mode_rejects_program_after_dash_dash() {
         let cli = Cli::try_parse_from(["guardian", "--payload", "hello", "--", "echo"]).unwrap();
         assert!(validate_mode_exclusivity(&cli).is_err());
+    }
+
+    #[test]
+    fn resolve_program_relative_path_in_cwd() {
+        let dir = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        #[cfg(windows)]
+        let (script, rel) = {
+            let script = dir.path().join("guardian-test-prog.bat");
+            fs::write(&script, "@exit /b 0\r\n").unwrap();
+            (script, ".\\guardian-test-prog.bat")
+        };
+        #[cfg(not(windows))]
+        let (script, rel) = {
+            let script = dir.path().join("guardian-test-prog");
+            fs::write(&script, b"#!/bin/sh\nexit 0\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            (script, "./guardian-test-prog")
+        };
+
+        let resolved = resolve_program(rel).unwrap();
+        assert_eq!(resolved, script.canonicalize().unwrap());
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn resolve_program_missing_absolute_path_errors() {
+        let err = resolve_program("/nonexistent/guardian-test-prog").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn load_settings_merges_cwd_guardian_toml() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        let mut f = fs::File::create(&cfg_path).unwrap();
+        writeln!(f, "filter_body_limit = 999").unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let mut argv = vec!["guardian", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        std::env::set_current_dir(prev).unwrap();
+        assert_eq!(settings.filter_body_limit, 999);
+    }
+
+    #[cfg(windows)]
+    fn reattach_stdin_to_nul() {
+        use std::os::windows::io::IntoRawHandle;
+        use windows_sys::Win32::System::Console::{SetStdHandle, STD_INPUT_HANDLE};
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(r"\\.\NUL")
+            .expect("open NUL");
+        let handle = file.into_raw_handle();
+        let ok = unsafe { SetStdHandle(STD_INPUT_HANDLE, handle) };
+        assert_ne!(ok, 0, "SetStdHandle(STD_INPUT_HANDLE) failed");
+    }
+
+    #[test]
+    fn is_stdin_null_true_when_stdin_is_dev_null() {
+        #[cfg(unix)]
+        {
+            use std::process::{Command, Stdio};
+
+            let output = Command::new("cargo")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .args([
+                    "test",
+                    "--bin",
+                    "guardian",
+                    "is_stdin_null_dev_null_probe",
+                    "--",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env("GUARDIAN_STDIN_NULL_PROBE", "1")
+                .stdin(Stdio::from(std::fs::File::open("/dev/null").unwrap()))
+                .output()
+                .expect("spawn cargo test");
+            assert!(
+                output.status.success(),
+                "is_stdin_null probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            std::env::set_var("GUARDIAN_STDIN_NULL_PROBE", "1");
+            reattach_stdin_to_nul();
+            assert!(is_stdin_null());
+        }
+    }
+
+    #[test]
+    fn is_stdin_null_dev_null_probe() {
+        if std::env::var_os("GUARDIAN_STDIN_NULL_PROBE").is_none() {
+            return;
+        }
+        #[cfg(windows)]
+        reattach_stdin_to_nul();
+        assert!(is_stdin_null());
     }
 }

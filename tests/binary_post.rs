@@ -36,6 +36,7 @@ fn binary_post_passthrough_succeeds() {
     let bin = common::guardian_bin();
     let mut child = std::process::Command::new(&bin)
         .args(&args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

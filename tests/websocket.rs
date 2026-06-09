@@ -32,6 +32,7 @@ fn wss_echo_passthrough_runs_child() {
         ws_bin.to_str().unwrap(),
         "wss://echo.websocket.org/",
     ]);
+    child.stdin(std::process::Stdio::null());
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
     let mut process = child.spawn().expect("spawn guardian");

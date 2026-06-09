@@ -15,6 +15,7 @@ fn rejects_ipv6_bind_before_spawn() {
             "--",
             "true",
         ])
+        .stdin(std::process::Stdio::null())
         .status()
         .expect("spawn guardian");
     assert!(!status.success());
@@ -32,6 +33,7 @@ fn rejects_invalid_bind_string() {
             "--",
             "true",
         ])
+        .stdin(std::process::Stdio::null())
         .status()
         .expect("spawn guardian");
     assert!(!status.success());

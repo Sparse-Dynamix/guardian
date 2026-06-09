@@ -48,6 +48,7 @@ fn interrupt_exits_130_and_stops_child() {
     }
 
     let ca_dir = tempfile::TempDir::new().expect("ca dir");
+    let mock = common::spawn_tpf_mock();
     let bin = common::guardian_bin();
     assert!(
         bin.is_file(),
@@ -62,12 +63,15 @@ fn interrupt_exits_130_and_stops_child() {
         .args([
             "--ca-dir",
             ca_dir.path().to_str().unwrap(),
+            "--tpf",
+            mock.pass_url.as_str(),
             "--port",
             port_arg.as_str(),
             "--",
             sleep.as_str(),
             "60",
         ])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

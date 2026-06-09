@@ -147,6 +147,7 @@ pub fn run_guardian_echo_env_var(
     var: &str,
     preset: &[(&str, &str)],
     java_home: Option<&Path>,
+    tpf_url: Option<&str>,
 ) -> std::io::Result<GuardianRun> {
     let ca_dir = TempDir::new()?;
     let child_args: Vec<String> = if cfg!(windows) {
@@ -158,11 +159,12 @@ pub fn run_guardian_echo_env_var(
         vec![sh, "-c".to_string(), format!("echo ${var}")]
     };
 
-    let mut args = vec![
-        "--ca-dir".to_string(),
-        ca_dir.path().display().to_string(),
-        "--".to_string(),
-    ];
+    let mut args = vec!["--ca-dir".to_string(), ca_dir.path().display().to_string()];
+    if let Some(url) = tpf_url {
+        args.push("--tpf".to_string());
+        args.push(url.to_string());
+    }
+    args.push("--".to_string());
     args.extend(child_args);
 
     let mut cmd = Command::new(guardian_bin());
@@ -252,7 +254,8 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
     let ca_dir = TempDir::new()?;
     args.push(ca_dir.path().display().to_string());
     args.push("--".to_string());
-    args.extend(curl_args(&url, Some(ca_dir.path())));
+    let ca_bundle = opts.trypanophobe_filter.is_some().then(|| ca_dir.path());
+    args.extend(curl_args(&url, ca_bundle));
     let extra_env = if opts.verbose {
         vec![("RUST_LOG", "guardian=trace")]
     } else {
@@ -298,6 +301,54 @@ fn run_guardian_child_spawn_once() -> std::io::Result<GuardianRun> {
     run_guardian_with_args(&args, ca_dir, &[])
 }
 
+pub struct TpfMockServer {
+    pub pass_url: String,
+    pub reject_url: String,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+pub fn spawn_tpf_mock() -> TpfMockServer {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind tpf mock");
+    let port = listener.local_addr().expect("local addr").port();
+    let base = format!("http://127.0.0.1:{port}");
+    let pass_url = format!("{base}/pass");
+    let reject_url = format!("{base}/reject");
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let thread = thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (status, body) = if req.contains(" /reject ") {
+                    (503, r#"{"safe":false}"#)
+                } else {
+                    (200, r#"{"safe":true}"#)
+                };
+                let response = format!(
+                        "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len(),
+                    );
+                let _ = stream.write_all(response.as_bytes());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    });
+    TpfMockServer {
+        pass_url,
+        reject_url,
+        _thread: thread,
+    }
+}
+
 pub fn run_guardian_payload(args: &[&str], stdin: Option<&[u8]>) -> std::io::Result<GuardianRun> {
     let ca_dir = TempDir::new()?;
     let bin = guardian_bin();
@@ -328,6 +379,7 @@ pub fn run_guardian_payload(args: &[&str], stdin: Option<&[u8]>) -> std::io::Res
             _ca_dir: ca_dir,
         });
     }
+    child.stdin(Stdio::null());
     child.stdout(Stdio::piped());
     child.stderr(Stdio::piped());
     let mut process = child.spawn()?;

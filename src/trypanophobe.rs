@@ -269,3 +269,168 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    use proxyapi::content_filter::{ContentFilter, HttpFilterContext, WsFilterContext};
+
+    use super::*;
+
+    fn spawn_mock(status: u16, body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("set_nonblocking");
+        let port = listener.local_addr().expect("local addr").port();
+        let body = body.to_string();
+        thread::spawn(move || {
+            for _ in 0..32 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 8192];
+                        let _ = stream.read(&mut buf);
+                        let response = format!(
+                            "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len(),
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/pass")
+    }
+
+    fn client_for(url: &str) -> TrypanophobeClient {
+        TrypanophobeClient::new(url.to_string(), DEFAULT_BLOCK_MESSAGE.to_string(), 5, 1024)
+            .expect("client")
+    }
+
+    #[test]
+    fn truncate_payload_respects_limit() {
+        let data: Vec<u8> = (0..20).collect();
+        assert_eq!(truncate_payload(&data, 20).len(), 20);
+        assert_eq!(truncate_payload(&data, 10).len(), 10);
+        assert_eq!(truncate_payload(&data, 10), data[..10]);
+    }
+
+    #[test]
+    fn body_contains_unsafe_detects_false_safe() {
+        assert!(body_contains_unsafe(r#"{"safe":false}"#));
+        assert!(!body_contains_unsafe(r#"{"safe":true}"#));
+        assert!(!body_contains_unsafe("not json"));
+    }
+
+    #[tokio::test]
+    async fn check_tool_payload_pass_returns_filter_response() {
+        let url = spawn_mock(200, r#"{"safe":true}"#);
+        thread::sleep(Duration::from_millis(50));
+        let client = client_for(&url);
+        let outcome = client
+            .check(FilterInput::ToolPayload { bytes: b"hello" })
+            .await
+            .expect("check");
+        match outcome {
+            FilterOutcome::FilterResponse { body } => assert!(body.contains("safe")),
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_200_with_unsafe_body_blocks() {
+        let url = spawn_mock(200, r#"{"safe":false}"#);
+        thread::sleep(Duration::from_millis(200));
+        let client = client_for(&url);
+        let outcome = client
+            .check(FilterInput::ToolPayload { bytes: b"x" })
+            .await
+            .expect("check");
+        assert!(matches!(outcome, FilterOutcome::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn check_tool_payload_reject_status_blocks() {
+        let url = spawn_mock(503, r#"{"safe":false}"#);
+        thread::sleep(Duration::from_millis(50));
+        let client = client_for(&url);
+        let outcome = client
+            .check(FilterInput::ToolPayload { bytes: b"x" })
+            .await
+            .expect("check");
+        match outcome {
+            FilterOutcome::Blocked { message } => {
+                assert!(message.contains("Blocked by Guardian"));
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_http_response_variant() {
+        let url = spawn_mock(200, r#"{"safe":true}"#);
+        thread::sleep(Duration::from_millis(50));
+        let client = client_for(&url);
+        let outcome = client
+            .check(FilterInput::HttpResponse {
+                method: "GET",
+                url: "http://example.com/",
+                status: 200,
+                scheme: "http",
+                body: b"body",
+            })
+            .await
+            .expect("http check");
+        assert!(matches!(outcome, FilterOutcome::FilterResponse { .. }));
+    }
+
+    #[tokio::test]
+    async fn check_ws_frame_variant() {
+        let url = spawn_mock(200, r#"{"safe":true}"#);
+        thread::sleep(Duration::from_millis(50));
+        let client = client_for(&url);
+        let outcome = client
+            .check(FilterInput::WsFrame {
+                direction: "server",
+                opcode: "text",
+                payload: b"frame",
+            })
+            .await
+            .expect("ws check");
+        assert!(matches!(outcome, FilterOutcome::FilterResponse { .. }));
+    }
+
+    #[tokio::test]
+    async fn content_filter_blocks_on_http_error() {
+        let client = client_for("http://127.0.0.1:1/pass");
+        let verdict = client
+            .check_http_response(HttpFilterContext {
+                method: "GET",
+                url: "http://example.com/",
+                status: 200,
+                scheme: "http",
+                body: b"",
+            })
+            .await;
+        assert!(matches!(verdict, FilterVerdict::Block { .. }));
+    }
+
+    #[tokio::test]
+    async fn content_filter_ws_error_blocks() {
+        let client = client_for("http://127.0.0.1:1/pass");
+        let verdict = client
+            .check_ws_frame(WsFilterContext {
+                direction: "server",
+                opcode: "text",
+                payload: b"",
+            })
+            .await;
+        assert!(matches!(verdict, FilterVerdict::Block { .. }));
+    }
+}

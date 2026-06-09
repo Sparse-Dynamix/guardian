@@ -102,13 +102,29 @@ mod tests {
     }
 
     #[test]
-    fn message_helpers_write_without_panic() {
+    fn plain_message_helpers_write_without_panic() {
         let ui = Ui::new(true);
         assert!(!ui.color_enabled());
         ui.warn("warn");
         ui.error("error");
         ui.info("info");
         ui.success("success");
+    }
+
+    #[test]
+    fn colored_message_helpers_write_without_panic() {
+        let ui = Ui::new(false);
+        assert!(ui.color_enabled());
+        ui.warn("warn");
+        ui.error("error");
+        ui.info("info");
+        ui.success("success");
+    }
+
+    #[test]
+    fn from_settings_reflects_no_color() {
+        let ui = Ui::from_settings(&test_settings(true));
+        assert!(!ui.color_enabled());
     }
 
     #[test]

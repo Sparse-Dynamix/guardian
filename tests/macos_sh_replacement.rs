@@ -1,6 +1,6 @@
 mod common;
 
-use common::{require_network, smoke_url, staged_curl_program, staged_sh_program};
+use common::{require_network, smoke_url, spawn_tpf_mock, staged_curl_program, staged_sh_program};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
@@ -23,15 +23,19 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
     let inner = format!("{curl} -sSf '{url}'");
 
     let ca_dir = TempDir::new().expect("ca dir");
+    let mock = spawn_tpf_mock();
     let mut child = Command::new(common::guardian_bin());
     child.args([
         "--ca-dir",
         ca_dir.path().to_str().unwrap(),
+        "--tpf",
+        &mock.pass_url,
         "--",
         &sh,
         "-c",
         &inner,
     ]);
+    child.stdin(Stdio::null());
     child.stdout(Stdio::piped());
     child.stderr(Stdio::piped());
     let mut process = child.spawn().expect("spawn guardian");

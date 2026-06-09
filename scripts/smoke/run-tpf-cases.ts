@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { $ } from "zx";
+import { $, usePowerShell } from "zx";
 import { tpfSmokeCases } from "./tpf-cases.ts";
 import type { TpfSmokeCase } from "./tpf-cases.ts";
 import {
@@ -15,6 +15,10 @@ import type { TpfMockServer } from "./tpf-mock-server.ts";
 import { assertGuardianBuilt, platformConfig } from "./platform.ts";
 import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
+
+if (process.platform === "win32") {
+  usePowerShell();
+}
 
 const DEFAULT_SMOKE_URL = "http://httpbingo.org/get";
 const SMOKE_RETRIES = 3;

@@ -28,6 +28,7 @@ fn ssh_port_not_intercepted() {
             "1",
             "http://127.0.0.1:22/",
         ])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

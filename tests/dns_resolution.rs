@@ -32,6 +32,7 @@ fn run_guardian_program(program_args: &[&str], timeout: Duration) -> std::io::Re
 
     let mut child = Command::new(&bin);
     child.args(&args);
+    child.stdin(Stdio::null());
     child.stdout(Stdio::piped());
     child.stderr(Stdio::piped());
 

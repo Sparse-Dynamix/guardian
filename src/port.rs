@@ -98,4 +98,11 @@ mod tests {
         let err = resolve_listen_port(ip, Some(port), PORT_MIN, PORT_MAX).unwrap_err();
         assert!(err.to_string().contains("already in use"));
     }
+
+    #[test]
+    fn auto_allocate_rejects_ipv6_bind() {
+        let ip = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let err = allocate_port_auto(ip, PORT_MIN, PORT_MAX).unwrap_err();
+        assert!(err.to_string().contains("IPv6 bind is not supported"));
+    }
 }
