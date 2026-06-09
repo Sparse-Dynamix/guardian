@@ -45,6 +45,7 @@ function runGuardian(guardianArgs: string[]): RunResult {
     cwd: REPO_ROOT,
     quiet: true,
     nothrow: true,
+    stdio: ["ignore", "pipe", "pipe"],
   });
   const result =
     hostPlatform() === "win"

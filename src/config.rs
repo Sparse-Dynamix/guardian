@@ -281,12 +281,71 @@ pub fn resolve_settings(cli: &Cli) -> Result<Settings> {
 }
 
 pub fn is_payload_mode(cli: &Cli) -> bool {
-    cli.payload.is_some() || (is_stdin_piped() && cli.program.is_empty())
+    cli.payload.is_some() || is_stdin_piped()
+}
+
+pub fn validate_mode_exclusivity(cli: &Cli) -> Result<()> {
+    if is_payload_mode(cli) && !cli.program.is_empty() {
+        anyhow::bail!(
+            "payload mode (--payload or piped stdin) cannot be combined with a program after --"
+        );
+    }
+    Ok(())
 }
 
 pub fn is_stdin_piped() -> bool {
     use std::io::IsTerminal;
-    !std::io::stdin().is_terminal()
+
+    !std::io::stdin().is_terminal() && !is_stdin_null()
+}
+
+fn is_stdin_null() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+
+        let fd = std::io::stdin().as_raw_fd();
+        #[cfg(target_os = "linux")]
+        {
+            let path = format!("/proc/self/fd/{fd}");
+            if let Ok(target) = std::fs::read_link(path) {
+                if target == std::path::Path::new("/dev/null") {
+                    return true;
+                }
+            }
+        }
+
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+            return false;
+        }
+        let stat = unsafe { stat.assume_init() };
+        if (stat.st_mode & libc::S_IFMT) != libc::S_IFCHR {
+            return false;
+        }
+
+        let mut null_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        if null_fd < 0 {
+            return false;
+        }
+        let same = unsafe {
+            libc::fstat(null_fd, null_stat.as_mut_ptr()) == 0
+                && null_stat.assume_init().st_rdev == stat.st_rdev
+        };
+        unsafe {
+            libc::close(null_fd);
+        }
+        same
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+
+        let handle = std::io::stdin().as_raw_handle();
+        handle.is_null() || handle == INVALID_HANDLE_VALUE
+    }
 }
 
 #[cfg(test)]
@@ -501,5 +560,11 @@ mod tests {
             settings.trypanophobe_filter.as_deref(),
             Some("http://127.0.0.1:1/pass")
         );
+    }
+
+    #[test]
+    fn payload_mode_rejects_program_after_dash_dash() {
+        let cli = Cli::try_parse_from(["guardian", "--payload", "hello", "--", "echo"]).unwrap();
+        assert!(validate_mode_exclusivity(&cli).is_err());
     }
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { $ } from "zx";
 import { tpfSmokeCases } from "./tpf-cases.ts";
 import type { TpfSmokeCase } from "./tpf-cases.ts";
 import {
@@ -61,32 +61,23 @@ async function runGuardianProcess(
   const outPath = path.join(dir, "stdout");
   const stderrFile = path.join(dir, "stderr");
 
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    const child = spawn(config.guardianBin, guardianArgs, {
-      cwd: REPO_ROOT,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      fs.writeFileSync(outPath, stdout);
-      fs.writeFileSync(stderrFile, stderr);
-      resolve(code ?? 1);
-    });
-    if (stdin !== undefined) {
-      child.stdin?.write(stdin);
-    }
-    child.stdin?.end();
-  });
+  const opts = {
+    cwd: REPO_ROOT,
+    quiet: true,
+    nothrow: true,
+    ...(stdin !== undefined
+      ? { input: stdin }
+      : { stdio: ["ignore", "pipe", "pipe"] as const }),
+  };
+  const result =
+    hostPlatform() === "win"
+      ? await $(opts)`& ${config.guardianBin} ${guardianArgs}`
+      : await $(opts)`${config.guardianBin} ${guardianArgs}`;
 
-  return { exitCode, stdoutFile: outPath, stderrFile };
+  fs.writeFileSync(outPath, result.stdout ?? "");
+  fs.writeFileSync(stderrFile, result.stderr ?? "");
+
+  return { exitCode: result.exitCode ?? 1, stdoutFile: outPath, stderrFile };
 }
 
 async function runPayloadCase(

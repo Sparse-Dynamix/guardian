@@ -29,7 +29,7 @@ use crate::ca::CaTrust;
 use crate::cli::{Cli, Commands};
 use crate::config::{
     is_payload_mode, resolve_ca_dir, resolve_no_color, resolve_payload_settings, resolve_settings,
-    resolve_trust_stores, Settings,
+    resolve_trust_stores, validate_mode_exclusivity, Settings,
 };
 use crate::injector::SpawnOutcome;
 use crate::system_trust::TrustStore;
@@ -301,6 +301,8 @@ async fn async_main() -> Result<i32> {
             }
         }
         None => {
+            validate_mode_exclusivity(&cli)?;
+
             if is_payload_mode(&cli) {
                 let settings = resolve_payload_settings(&cli)?;
                 init_tracing(cli.verbose, &settings);

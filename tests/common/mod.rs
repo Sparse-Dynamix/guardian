@@ -173,6 +173,7 @@ pub fn run_guardian_echo_env_var(
         cmd.env(k, v);
     }
     cmd.args(&args);
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -364,6 +365,7 @@ fn run_guardian_with_args(
     for (key, value) in extra_env {
         child.env(key, value);
     }
+    child.stdin(Stdio::null());
     child.stdout(Stdio::piped());
     child.stderr(Stdio::piped());
 

@@ -9,7 +9,7 @@ Cross-platform Rust CLI that hardens AI harnesses: optional Frida `connect()` ho
 | MITM | `guardian -- <program>` | Passthrough exec (no Frida/proxy) | Frida hook + proxy + response/frame filter |
 | Payload | `--payload` or piped stdin | Echo payload to stdout | POST to filter; print response or block |
 
-Piped stdin selects payload mode only when no child program follows `--` (or use `--payload` explicitly). `echo data | guardian --tpf URL` filters the pipe; `guardian --tpf URL -- curl` stays MITM even if the parent has a piped stdin.
+Piped stdin (non-TTY, not `/dev/null`) or `--payload` selects payload mode only; a child program after `--` is invalid in that case and is rejected. MITM harnesses should use `stdin: 'ignore'` / `Stdio::null()`.
 
 ## Goal
 
