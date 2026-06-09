@@ -16,13 +16,12 @@ pub struct FileSettings {
     pub bind: String,
     pub port: Option<u16>,
     pub trypanophobe_filter: Option<String>,
+    pub trypanophobe_swap: bool,
     pub filter: Option<String>,
     #[serde(default = "default_ignored_ports")]
     pub ignored_ports: Vec<u16>,
     pub ca_dir: String,
-    pub no_color: bool,
     pub filter_timeout_secs: u64,
-    pub filter_body_limit: usize,
     pub block_message: String,
     pub port_min: u16,
     pub port_max: u16,
@@ -35,8 +34,6 @@ pub struct FileSettings {
     pub java_truststore_password: String,
     pub deno_tls_ca_store: String,
     pub node_options_append: String,
-    pub tracing_prefix: String,
-    pub tracing_default_level: String,
     pub trust_stores: Option<Vec<String>>,
 }
 
@@ -46,12 +43,11 @@ impl Default for FileSettings {
             bind: "127.0.0.1".to_string(),
             port: None,
             trypanophobe_filter: None,
+            trypanophobe_swap: false,
             filter: None,
             ignored_ports: default_ignored_ports(),
             ca_dir: "~/.guardian".to_string(),
-            no_color: false,
             filter_timeout_secs: 10,
-            filter_body_limit: 1_048_576,
             block_message: DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
@@ -64,8 +60,6 @@ impl Default for FileSettings {
             java_truststore_password: "guardian".to_string(),
             deno_tls_ca_store: "system,mozilla".to_string(),
             node_options_append: "--use-openssl-ca".to_string(),
-            tracing_prefix: "guardian: ".to_string(),
-            tracing_default_level: "guardian=debug".to_string(),
             trust_stores: None,
         }
     }
@@ -76,12 +70,11 @@ pub struct Settings {
     pub bind: Ipv4Addr,
     pub port: Option<u16>,
     pub trypanophobe_filter: Option<String>,
+    pub trypanophobe_swap: bool,
     pub payload: Option<String>,
     pub filter: String,
     pub ca_dir: PathBuf,
-    pub no_color: bool,
     pub filter_timeout_secs: u64,
-    pub filter_body_limit: usize,
     pub block_message: String,
     pub port_min: u16,
     pub port_max: u16,
@@ -94,15 +87,9 @@ pub struct Settings {
     pub java_truststore_password: String,
     pub deno_tls_ca_store: String,
     pub node_options_append: String,
-    pub tracing_prefix: String,
-    pub tracing_default_level: String,
     pub program: String,
     pub args: Vec<String>,
     pub trust_stores: Vec<String>,
-}
-
-fn default_ignored_ports() -> Vec<u16> {
-    DEFAULT_IGNORED_PORTS.to_vec()
 }
 
 pub fn expand_tilde(path: &str) -> Result<PathBuf> {
@@ -118,6 +105,10 @@ pub fn expand_tilde(path: &str) -> Result<PathBuf> {
 
 pub fn default_guardian_home() -> Result<PathBuf> {
     expand_tilde("~/.guardian")
+}
+
+fn default_ignored_ports() -> Vec<u16> {
+    DEFAULT_IGNORED_PORTS.to_vec()
 }
 
 pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
@@ -197,15 +188,11 @@ pub fn resolve_trust_stores(cli: &Cli, opts: Option<&SystemOpts>) -> Vec<String>
         .unwrap_or_else(default_trust_stores)
 }
 
-pub fn resolve_no_color(cli: &Cli) -> Result<bool> {
-    let file = load_file_settings(cli.config.as_deref())?;
-    Ok(cli.no_color || file.no_color)
-}
-
 fn merge_tpf(cli: &Cli, file: &FileSettings) -> Option<String> {
     cli.trypanophobe_filter
         .clone()
-        .or(file.trypanophobe_filter.clone())
+        .or_else(|| file.trypanophobe_filter.clone())
+        .filter(|url| !url.is_empty())
 }
 
 pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
@@ -214,6 +201,10 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
     let bind_str = cli.bind.as_deref().unwrap_or(&file.bind);
     let port = cli.port.or(file.port);
     let trypanophobe_filter = merge_tpf(cli, &file);
+    let trypanophobe_swap = cli.trypanophobe_swap || file.trypanophobe_swap;
+    if trypanophobe_swap && trypanophobe_filter.is_none() {
+        anyhow::bail!("--trypanophobe-swap / --tps requires --tpf / trypanophobe_filter");
+    }
     let ignored_ports = cli
         .ignored_ports
         .clone()
@@ -225,7 +216,6 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         .or(file.filter.clone())
         .unwrap_or_else(|| connect_filter_from_ports(&ignored_ports));
     let ca_dir = resolve_ca_dir(cli)?;
-    let no_color = cli.no_color || file.no_color;
 
     let trust_stores = file
         .trust_stores
@@ -236,12 +226,11 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         bind: parse_bind_ipv4(bind_str)?,
         port,
         trypanophobe_filter,
+        trypanophobe_swap,
         payload: cli.payload.clone(),
         filter,
         ca_dir,
-        no_color,
         filter_timeout_secs: file.filter_timeout_secs,
-        filter_body_limit: file.filter_body_limit,
         block_message: file.block_message.clone(),
         port_min: file.port_min,
         port_max: file.port_max,
@@ -254,8 +243,6 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         java_truststore_password: file.java_truststore_password,
         deno_tls_ca_store: file.deno_tls_ca_store,
         node_options_append: file.node_options_append,
-        tracing_prefix: file.tracing_prefix,
-        tracing_default_level: file.tracing_default_level,
         program: String::new(),
         args: vec![],
         trust_stores,
@@ -401,7 +388,8 @@ mod tests {
         let cfg_path = dir.path().join("guardian.toml");
         let mut f = fs::File::create(&cfg_path).unwrap();
         writeln!(f, "bind = \"127.0.0.1\"").unwrap();
-        writeln!(f, "filter_body_limit = 128").unwrap();
+        writeln!(f, "trypanophobe_swap = true").unwrap();
+        writeln!(f, "trypanophobe_filter = \"http://127.0.0.1:1/pass\"").unwrap();
         writeln!(f, "port = 9000").unwrap();
 
         let mut argv = vec![
@@ -415,7 +403,7 @@ mod tests {
         let cli = Cli::try_parse_from(argv).unwrap();
 
         let settings = resolve_settings(&cli).unwrap();
-        assert_eq!(settings.filter_body_limit, 128);
+        assert!(settings.trypanophobe_swap);
         assert_eq!(settings.port, Some(9000));
         assert_eq!(
             settings.program,
@@ -525,6 +513,39 @@ mod tests {
     }
 
     #[test]
+    fn tps_without_tpf_errors() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        std::fs::write(&cfg_path, "bind = \"127.0.0.1\"\n").unwrap();
+        let prev_filter = std::env::var_os("GUARDIAN_TRYPANOPHOBE_FILTER");
+        std::env::remove_var("GUARDIAN_TRYPANOPHOBE_FILTER");
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--tps",
+            "--payload",
+            "x",
+        ])
+        .unwrap();
+        let err = resolve_payload_settings(&cli).unwrap_err();
+        assert!(err.to_string().contains("requires --tpf"));
+        if let Some(value) = prev_filter {
+            std::env::set_var("GUARDIAN_TRYPANOPHOBE_FILTER", value);
+        }
+    }
+
+    #[test]
+    fn custom_filter_from_cli() {
+        let mut argv = vec!["guardian", "--filter", "host === \"api.example.com\"", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.filter.contains("api.example.com"));
+    }
+
+    #[test]
     fn bind_from_file_when_cli_omitted() {
         let dir = TempDir::new().unwrap();
         let cfg_path = dir.path().join("guardian.toml");
@@ -559,15 +580,6 @@ mod tests {
     }
 
     #[test]
-    fn no_color_from_cli() {
-        let mut argv = vec!["guardian", "--no-color", "--"];
-        argv.extend(test_true_args());
-        let cli = Cli::try_parse_from(argv).unwrap();
-        let settings = resolve_settings(&cli).unwrap();
-        assert!(settings.no_color);
-    }
-
-    #[test]
     fn tpf_from_cli() {
         let cli = Cli::try_parse_from([
             "guardian",
@@ -585,6 +597,12 @@ mod tests {
     }
 
     #[test]
+    fn is_payload_mode_true_when_payload_flag_set() {
+        let cli = Cli::try_parse_from(["guardian", "--payload", "hello"]).unwrap();
+        assert!(is_payload_mode(&cli));
+    }
+
+    #[test]
     fn payload_mode_rejects_program_after_dash_dash() {
         let cli = Cli::try_parse_from(["guardian", "--payload", "hello", "--", "echo"]).unwrap();
         assert!(validate_mode_exclusivity(&cli).is_err());
@@ -592,6 +610,7 @@ mod tests {
 
     #[test]
     fn resolve_program_relative_path_in_cwd() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -624,10 +643,12 @@ mod tests {
 
     #[test]
     fn load_settings_merges_cwd_guardian_toml() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         let cfg_path = dir.path().join("guardian.toml");
         let mut f = fs::File::create(&cfg_path).unwrap();
-        writeln!(f, "filter_body_limit = 999").unwrap();
+        writeln!(f, "trypanophobe_filter = \"http://127.0.0.1:1/pass\"").unwrap();
+        writeln!(f, "trypanophobe_swap = true").unwrap();
 
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -636,57 +657,24 @@ mod tests {
         let cli = Cli::try_parse_from(argv).unwrap();
         let settings = resolve_settings(&cli).unwrap();
         std::env::set_current_dir(prev).unwrap();
-        assert_eq!(settings.filter_body_limit, 999);
-    }
-
-    #[cfg(windows)]
-    fn reattach_stdin_to_nul() {
-        use std::os::windows::io::IntoRawHandle;
-        use windows_sys::Win32::System::Console::{SetStdHandle, STD_INPUT_HANDLE};
-
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(r"\\.\NUL")
-            .expect("open NUL");
-        let handle = file.into_raw_handle();
-        let ok = unsafe { SetStdHandle(STD_INPUT_HANDLE, handle) };
-        assert_ne!(ok, 0, "SetStdHandle(STD_INPUT_HANDLE) failed");
+        assert!(settings.trypanophobe_swap);
     }
 
     #[test]
-    fn is_stdin_null_true_when_stdin_is_dev_null() {
-        #[cfg(unix)]
-        {
-            use std::process::{Command, Stdio};
+    fn is_stdin_null_true_when_stdin_is_null() {
+        use std::process::{Command, Stdio};
 
-            let output = Command::new("cargo")
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .args([
-                    "test",
-                    "--bin",
-                    "guardian",
-                    "is_stdin_null_dev_null_probe",
-                    "--",
-                    "--exact",
-                    "--nocapture",
-                ])
-                .env("GUARDIAN_STDIN_NULL_PROBE", "1")
-                .stdin(Stdio::from(std::fs::File::open("/dev/null").unwrap()))
-                .output()
-                .expect("spawn cargo test");
-            assert!(
-                output.status.success(),
-                "is_stdin_null probe failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        #[cfg(windows)]
-        {
-            std::env::set_var("GUARDIAN_STDIN_NULL_PROBE", "1");
-            reattach_stdin_to_nul();
-            assert!(is_stdin_null());
-        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .env("GUARDIAN_STDIN_NULL_PROBE", "1")
+            .args(["is_stdin_null_dev_null_probe", "--exact", "--nocapture"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn stdin-null probe");
+        assert!(
+            output.status.success(),
+            "is_stdin_null probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -694,8 +682,6 @@ mod tests {
         if std::env::var_os("GUARDIAN_STDIN_NULL_PROBE").is_none() {
             return;
         }
-        #[cfg(windows)]
-        reattach_stdin_to_nul();
         assert!(is_stdin_null());
     }
 }

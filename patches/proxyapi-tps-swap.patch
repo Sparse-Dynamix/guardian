@@ -1,0 +1,73 @@
+diff --git a/src/content_filter.rs b/src/content_filter.rs
+index 10dc8d5..8d1f423 100644
+--- a/src/content_filter.rs
++++ b/src/content_filter.rs
+@@ -2,6 +2,7 @@
+ 
+ use async_trait::async_trait;
+ use bytes::Bytes;
++use http::HeaderMap;
+ 
+ /// Context for filtering an HTTP response before it reaches the client.
+ pub struct HttpFilterContext<'a> {
+@@ -24,6 +25,10 @@ pub struct WsFilterContext<'a> {
+ pub enum FilterVerdict {
+     Allow,
+     Block { message: Bytes },
++    Replace {
++        body: Bytes,
++        headers: HeaderMap,
++    },
+ }
+ 
+ /// Async hook invoked after upstream content is captured and before the client sees it.
+diff --git a/src/handler.rs b/src/handler.rs
+index cc90bee..191a5eb 100644
+--- a/src/handler.rs
++++ b/src/handler.rs
+@@ -626,7 +626,33 @@ impl CapturingHandler {
+                 parts.headers = http::HeaderMap::new();
+                 (parts, message)
+             }
++            FilterVerdict::Replace {
++                body: new_body,
++                headers: tpf_headers,
++            } => {
++                parts.headers = Self::sanitize_tpf_response_headers(tpf_headers, new_body.len());
++                (parts, new_body)
++            }
++        }
++    }
++
++    fn sanitize_tpf_response_headers(
++        mut headers: http::HeaderMap,
++        body_len: usize,
++    ) -> http::HeaderMap {
++        for name in [
++            http::header::TRANSFER_ENCODING,
++            http::header::CONNECTION,
++            http::header::CONTENT_ENCODING,
++        ] {
++            headers.remove(name);
+         }
++        headers.remove(http::header::HeaderName::from_static("keep-alive"));
++        headers.insert(
++            http::header::CONTENT_LENGTH,
++            http::HeaderValue::from(body_len),
++        );
++        headers
+     }
+ 
+     fn emit_captured_response(&mut self, parts: http::response::Parts, body_bytes: Bytes) {
+diff --git a/src/proxy/forward.rs b/src/proxy/forward.rs
+index 9154857..604c206 100644
+--- a/src/proxy/forward.rs
++++ b/src/proxy/forward.rs
+@@ -709,6 +709,7 @@ async fn filter_server_ws_frame(
+     match verdict {
+         FilterVerdict::Allow => None,
+         block @ FilterVerdict::Block { .. } => Some(block),
++        FilterVerdict::Replace { body, .. } => Some(FilterVerdict::Block { message: body }),
+     }
+ }
+ 

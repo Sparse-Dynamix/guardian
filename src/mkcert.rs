@@ -67,6 +67,8 @@ mod tests {
 
     #[test]
     fn extract_writes_expected_size() {
+        let _guard = crate::test_lock::env_test_lock();
+        std::env::remove_var("GUARDIAN_MKCERT_TEST");
         let dir = TempDir::new().unwrap();
         let path = executable_path(dir.path()).unwrap();
         assert!(path.is_file());
@@ -78,6 +80,7 @@ mod tests {
 
     #[test]
     fn test_env_override_skips_embedded_extract() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         let custom = dir.path().join("custom-mkcert");
         std::fs::write(&custom, b"stub").unwrap();

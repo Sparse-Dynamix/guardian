@@ -13,9 +13,13 @@ use clap::{Parser, Subcommand};
     allow_hyphen_values = true
 )]
 pub struct Cli {
-    /// Trypanophobe filter endpoint URL (POST JSON, 200 = safe).
+    /// Trypanophobe filter endpoint (POST raw body; 200 = pass).
     #[arg(long = "trypanophobe-filter", alias = "tpf", global = true)]
     pub trypanophobe_filter: Option<String>,
+
+    /// Replace harness-visible content with the TPF response body and headers (requires --tpf).
+    #[arg(long = "trypanophobe-swap", alias = "tps", global = true)]
+    pub trypanophobe_swap: bool,
 
     /// Tool-call payload for payload-only mode (omit to read stdin).
     #[arg(long, global = true)]
@@ -33,7 +37,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub ca_dir: Option<PathBuf>,
 
-    /// JS expression for connect() filter (sa_family, addr, port).
+    /// JS expression for connect() filter (sa_family, addr, port, host).
     #[arg(long, global = true)]
     pub filter: Option<String>,
 
@@ -44,14 +48,6 @@ pub struct Cli {
     /// Config file path.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
-
-    /// Enable internal tracing to stderr (also respects RUST_LOG).
-    #[arg(short = 'v', long, global = true)]
-    pub verbose: bool,
-
-    /// Disable colored stderr output for Guardian messages.
-    #[arg(long, global = true)]
-    pub no_color: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -127,6 +123,19 @@ mod tests {
     }
 
     #[test]
+    fn remove_system_subcommand_parses() {
+        let cli = Cli::try_parse_from(["guardian", "remove-system"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::RemoveSystem(_))));
+    }
+
+    #[test]
+    fn ignored_ports_parses_comma_list() {
+        let cli = Cli::try_parse_from(["guardian", "--ignored-ports", "22,8080", "--payload", "x"])
+            .unwrap();
+        assert_eq!(cli.ignored_ports, Some(vec![22, 8080]));
+    }
+
+    #[test]
     fn check_system_with_stores() {
         let cli =
             Cli::try_parse_from(["guardian", "check-system", "--stores", "system,nss"]).unwrap();
@@ -153,5 +162,19 @@ mod tests {
             Some("http://127.0.0.1:9999/pass")
         );
         assert_eq!(cli.payload.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn tps_alias_parses() {
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--tpf",
+            "http://127.0.0.1:9999/pass",
+            "--tps",
+            "--payload",
+            "hello",
+        ])
+        .unwrap();
+        assert!(cli.trypanophobe_swap);
     }
 }

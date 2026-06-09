@@ -2,11 +2,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::Bytes;
+use http::HeaderMap;
 use proxyapi::content_filter::{ContentFilter, FilterVerdict, HttpFilterContext, WsFilterContext};
 use reqwest::Client;
-use serde_json::{json, Value};
 
 use crate::config::Settings;
 
@@ -14,34 +13,22 @@ pub const DEFAULT_BLOCK_MESSAGE: &str = "Blocked by Guardian: content failed saf
 
 #[derive(Debug, Clone)]
 pub enum FilterInput<'a> {
-    HttpResponse {
-        method: &'a str,
-        url: &'a str,
-        status: u16,
-        scheme: &'a str,
-        body: &'a [u8],
-    },
-    WsFrame {
-        direction: &'a str,
-        opcode: &'a str,
-        payload: &'a [u8],
-    },
-    ToolPayload {
-        bytes: &'a [u8],
-    },
+    HttpResponse { url: &'a str, body: &'a [u8] },
+    WsFrame { payload: &'a [u8] },
+    ToolPayload { bytes: &'a [u8] },
 }
 
 #[derive(Debug, Clone)]
 pub enum FilterOutcome {
     Allowed,
+    Replace { body: Bytes, headers: HeaderMap },
     Blocked { message: String },
-    FilterResponse { body: String },
 }
 
 pub struct TrypanophobeClient {
     url: String,
     block_message: String,
-    body_limit: usize,
+    swap: bool,
     http: Client,
 }
 
@@ -55,16 +42,11 @@ impl TrypanophobeClient {
             url,
             settings.block_message.clone(),
             settings.filter_timeout_secs,
-            settings.filter_body_limit,
+            settings.trypanophobe_swap,
         )
     }
 
-    pub fn new(
-        url: String,
-        block_message: String,
-        timeout_secs: u64,
-        body_limit: usize,
-    ) -> Result<Self> {
+    pub fn new(url: String, block_message: String, timeout_secs: u64, swap: bool) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
@@ -72,97 +54,53 @@ impl TrypanophobeClient {
         Ok(Self {
             url,
             block_message,
-            body_limit,
+            swap,
             http,
         })
     }
 
     pub async fn check(&self, input: FilterInput<'_>) -> Result<FilterOutcome> {
-        let (kind, metadata, payload_bytes) = match input {
-            FilterInput::HttpResponse {
-                method,
-                url,
-                status,
-                scheme,
-                body,
-            } => (
-                "http_response",
-                json!({
-                    "url": url,
-                    "method": method,
-                    "status": status,
-                    "scheme": scheme,
-                }),
-                truncate_payload(body, self.body_limit),
-            ),
-            FilterInput::WsFrame {
-                direction,
-                opcode,
-                payload,
-            } => (
-                "ws_frame",
-                json!({
-                    "ws_direction": direction,
-                    "ws_opcode": opcode,
-                }),
-                truncate_payload(payload, self.body_limit),
-            ),
-            FilterInput::ToolPayload { bytes } => (
-                "tool_payload",
-                json!({}),
-                truncate_payload(bytes, self.body_limit),
-            ),
+        let (body_bytes, query_url) = match input {
+            FilterInput::HttpResponse { url, body } => (body.to_vec(), Some(url)),
+            FilterInput::WsFrame { payload } => (payload.to_vec(), None),
+            FilterInput::ToolPayload { bytes } => (bytes.to_vec(), None),
         };
 
-        let request_body = json!({
-            "kind": kind,
-            "payload": STANDARD.encode(&payload_bytes),
-            "metadata": metadata,
-        });
+        let mut request = self.http.post(&self.url).body(body_bytes);
+        if let Some(url) = query_url {
+            request = request.query(&[("url", url)]);
+        }
 
-        let response = self
-            .http
-            .post(&self.url)
-            .json(&request_body)
+        let response = request
             .send()
             .await
             .context("Trypanophobe filter request failed")?;
 
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-
-        if status.is_success() {
-            if body_contains_unsafe(&body) {
-                return Ok(FilterOutcome::Blocked {
-                    message: self.block_message.clone(),
-                });
-            }
-            return Ok(FilterOutcome::FilterResponse { body });
+        if !status.is_success() {
+            return Ok(FilterOutcome::Blocked {
+                message: self.block_message.clone(),
+            });
         }
 
-        Ok(FilterOutcome::Blocked {
-            message: self.block_message.clone(),
-        })
-    }
+        if self.swap {
+            let headers = response_headers(&response);
+            let body = response.bytes().await.context("failed to read TPF body")?;
+            return Ok(FilterOutcome::Replace { body, headers });
+        }
 
-    fn block_bytes(&self) -> Bytes {
-        Bytes::from(self.block_message.clone())
-    }
-}
-
-fn truncate_payload(body: &[u8], limit: usize) -> Vec<u8> {
-    if body.len() <= limit {
-        body.to_vec()
-    } else {
-        body[..limit].to_vec()
+        Ok(FilterOutcome::Allowed)
     }
 }
 
-fn body_contains_unsafe(body: &str) -> bool {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| v.get("safe").and_then(|s| s.as_bool()))
-        .is_some_and(|safe| !safe)
+fn response_headers(response: &reqwest::Response) -> HeaderMap {
+    let mut map = HeaderMap::new();
+    for (name, value) in response.headers().iter() {
+        if let Ok(v) = http::HeaderValue::from_bytes(value.as_bytes()) {
+            map.insert(name, v);
+        }
+    }
+    map
 }
 
 #[async_trait]
@@ -170,50 +108,39 @@ impl ContentFilter for TrypanophobeClient {
     async fn check_http_response(&self, ctx: HttpFilterContext<'_>) -> FilterVerdict {
         match self
             .check(FilterInput::HttpResponse {
-                method: ctx.method,
                 url: ctx.url,
-                status: ctx.status,
-                scheme: ctx.scheme,
                 body: ctx.body,
             })
             .await
         {
-            Ok(FilterOutcome::Allowed | FilterOutcome::FilterResponse { .. }) => {
-                FilterVerdict::Allow
+            Ok(FilterOutcome::Allowed) => FilterVerdict::Allow,
+            Ok(FilterOutcome::Replace { body, headers }) => {
+                FilterVerdict::Replace { body, headers }
             }
             Ok(FilterOutcome::Blocked { message }) => FilterVerdict::Block {
                 message: Bytes::from(message),
             },
-            Err(e) => {
-                tracing::warn!(target: "guardian", "Trypanophobe HTTP filter error: {e:#}");
-                FilterVerdict::Block {
-                    message: self.block_bytes(),
-                }
-            }
+            Err(e) => FilterVerdict::Block {
+                message: Bytes::from(e.to_string()),
+            },
         }
     }
 
     async fn check_ws_frame(&self, ctx: WsFilterContext<'_>) -> FilterVerdict {
         match self
             .check(FilterInput::WsFrame {
-                direction: ctx.direction,
-                opcode: ctx.opcode,
                 payload: ctx.payload,
             })
             .await
         {
-            Ok(FilterOutcome::Allowed | FilterOutcome::FilterResponse { .. }) => {
-                FilterVerdict::Allow
-            }
+            Ok(FilterOutcome::Allowed) => FilterVerdict::Allow,
+            Ok(FilterOutcome::Replace { .. }) => FilterVerdict::Allow,
             Ok(FilterOutcome::Blocked { message }) => FilterVerdict::Block {
                 message: Bytes::from(message),
             },
-            Err(e) => {
-                tracing::warn!(target: "guardian", "Trypanophobe WS filter error: {e:#}");
-                FilterVerdict::Block {
-                    message: self.block_bytes(),
-                }
-            }
+            Err(e) => FilterVerdict::Block {
+                message: Bytes::from(e.to_string()),
+            },
         }
     }
 }
@@ -242,7 +169,7 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
         url,
         settings.block_message.clone(),
         settings.filter_timeout_secs,
-        settings.filter_body_limit,
+        settings.trypanophobe_swap,
     )?;
 
     match client
@@ -255,9 +182,9 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
                 .context("failed to write payload to stdout")?;
             Ok(0)
         }
-        FilterOutcome::FilterResponse { body } => {
+        FilterOutcome::Replace { body, .. } => {
             io::stdout()
-                .write_all(body.as_bytes())
+                .write_all(&body)
                 .context("failed to write filter response to stdout")?;
             Ok(0)
         }
@@ -274,26 +201,57 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
-    use proxyapi::content_filter::{ContentFilter, HttpFilterContext, WsFilterContext};
-
     use super::*;
 
-    fn spawn_mock(status: u16, body: &str) -> String {
+    #[derive(Default)]
+    struct MockRecord {
+        body: Vec<u8>,
+        query: String,
+    }
+
+    fn spawn_mock(
+        status: u16,
+        body: &str,
+        content_type: Option<&str>,
+        record: Option<Arc<Mutex<MockRecord>>>,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
         listener.set_nonblocking(true).expect("set_nonblocking");
         let port = listener.local_addr().expect("local addr").port();
         let body = body.to_string();
+        let ct = content_type.map(str::to_string);
         thread::spawn(move || {
             for _ in 0..32 {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut buf = [0u8; 8192];
-                        let _ = stream.read(&mut buf);
+                        let mut buf = [0u8; 65536];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        if let Some(rec) = &record {
+                            let query = req
+                                .lines()
+                                .next()
+                                .and_then(|line| line.split_whitespace().nth(1))
+                                .unwrap_or("")
+                                .split('?')
+                                .nth(1)
+                                .unwrap_or("")
+                                .to_string();
+                            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(n);
+                            let mut guard = rec.lock().expect("lock");
+                            guard.query = query;
+                            guard.body = buf[body_start..n].to_vec();
+                        }
+                        let ct_line = ct
+                            .as_ref()
+                            .map(|t| format!("Content-Type: {t}\r\n"))
+                            .unwrap_or_default();
                         let response = format!(
-                            "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            "HTTP/1.1 {status} \r\n{ct_line}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len(),
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -308,58 +266,28 @@ mod tests {
         format!("http://127.0.0.1:{port}/pass")
     }
 
-    fn client_for(url: &str) -> TrypanophobeClient {
-        TrypanophobeClient::new(url.to_string(), DEFAULT_BLOCK_MESSAGE.to_string(), 5, 1024)
+    fn client_for(url: &str, swap: bool) -> TrypanophobeClient {
+        TrypanophobeClient::new(url.to_string(), DEFAULT_BLOCK_MESSAGE.to_string(), 5, swap)
             .expect("client")
     }
 
-    #[test]
-    fn truncate_payload_respects_limit() {
-        let data: Vec<u8> = (0..20).collect();
-        assert_eq!(truncate_payload(&data, 20).len(), 20);
-        assert_eq!(truncate_payload(&data, 10).len(), 10);
-        assert_eq!(truncate_payload(&data, 10), data[..10]);
-    }
-
-    #[test]
-    fn body_contains_unsafe_detects_false_safe() {
-        assert!(body_contains_unsafe(r#"{"safe":false}"#));
-        assert!(!body_contains_unsafe(r#"{"safe":true}"#));
-        assert!(!body_contains_unsafe("not json"));
-    }
-
     #[tokio::test]
-    async fn check_tool_payload_pass_returns_filter_response() {
-        let url = spawn_mock(200, r#"{"safe":true}"#);
+    async fn check_tool_payload_200_allowed_without_swap() {
+        let url = spawn_mock(200, "", None, None);
         thread::sleep(Duration::from_millis(50));
-        let client = client_for(&url);
+        let client = client_for(&url, false);
         let outcome = client
             .check(FilterInput::ToolPayload { bytes: b"hello" })
             .await
             .expect("check");
-        match outcome {
-            FilterOutcome::FilterResponse { body } => assert!(body.contains("safe")),
-            other => panic!("unexpected outcome: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn check_200_with_unsafe_body_blocks() {
-        let url = spawn_mock(200, r#"{"safe":false}"#);
-        thread::sleep(Duration::from_millis(200));
-        let client = client_for(&url);
-        let outcome = client
-            .check(FilterInput::ToolPayload { bytes: b"x" })
-            .await
-            .expect("check");
-        assert!(matches!(outcome, FilterOutcome::Blocked { .. }));
+        assert!(matches!(outcome, FilterOutcome::Allowed));
     }
 
     #[tokio::test]
     async fn check_tool_payload_reject_status_blocks() {
-        let url = spawn_mock(503, r#"{"safe":false}"#);
+        let url = spawn_mock(503, "", None, None);
         thread::sleep(Duration::from_millis(50));
-        let client = client_for(&url);
+        let client = client_for(&url, false);
         let outcome = client
             .check(FilterInput::ToolPayload { bytes: b"x" })
             .await
@@ -373,42 +301,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_http_response_variant() {
-        let url = spawn_mock(200, r#"{"safe":true}"#);
+    async fn check_http_posts_raw_body_with_url_query() {
+        let record = Arc::new(Mutex::new(MockRecord::default()));
+        let url = spawn_mock(200, "", None, Some(record.clone()));
         thread::sleep(Duration::from_millis(50));
-        let client = client_for(&url);
-        let outcome = client
+        let client = client_for(&url, false);
+        let _ = client
             .check(FilterInput::HttpResponse {
-                method: "GET",
-                url: "http://example.com/",
-                status: 200,
-                scheme: "http",
-                body: b"body",
+                url: "http://example.com/path",
+                body: b"response-bytes",
             })
             .await
             .expect("http check");
-        assert!(matches!(outcome, FilterOutcome::FilterResponse { .. }));
+        let guard = record.lock().expect("lock");
+        assert!(guard.query.contains("url="));
+        assert!(guard.query.contains("example.com"));
+        assert_eq!(guard.body, b"response-bytes");
     }
 
     #[tokio::test]
-    async fn check_ws_frame_variant() {
-        let url = spawn_mock(200, r#"{"safe":true}"#);
+    async fn check_swap_returns_body_and_headers() {
+        let url = spawn_mock(200, "swapped", Some("text/markdown"), None);
         thread::sleep(Duration::from_millis(50));
-        let client = client_for(&url);
+        let client = client_for(&url, true);
         let outcome = client
-            .check(FilterInput::WsFrame {
-                direction: "server",
-                opcode: "text",
-                payload: b"frame",
-            })
+            .check(FilterInput::ToolPayload { bytes: b"x" })
             .await
-            .expect("ws check");
-        assert!(matches!(outcome, FilterOutcome::FilterResponse { .. }));
+            .expect("check");
+        match outcome {
+            FilterOutcome::Replace { body, headers } => {
+                assert_eq!(&body[..], b"swapped");
+                assert_eq!(
+                    headers.get(http::header::CONTENT_TYPE).unwrap(),
+                    "text/markdown"
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn content_filter_blocks_on_http_error() {
-        let client = client_for("http://127.0.0.1:1/pass");
+    async fn content_filter_http_error_returns_block_with_error() {
+        let client = client_for("http://127.0.0.1:1/pass", false);
         let verdict = client
             .check_http_response(HttpFilterContext {
                 method: "GET",
@@ -422,15 +356,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn content_filter_ws_error_blocks() {
-        let client = client_for("http://127.0.0.1:1/pass");
+    async fn content_filter_http_replace_on_swap() {
+        let url = spawn_mock(200, "replaced", Some("text/plain"), None);
+        thread::sleep(Duration::from_millis(50));
+        let client = client_for(&url, true);
         let verdict = client
-            .check_ws_frame(WsFilterContext {
-                direction: "server",
-                opcode: "text",
-                payload: b"",
+            .check_http_response(HttpFilterContext {
+                method: "GET",
+                url: "http://example.com/page",
+                status: 200,
+                scheme: "http",
+                body: b"upstream",
             })
             .await;
-        assert!(matches!(verdict, FilterVerdict::Block { .. }));
+        match verdict {
+            FilterVerdict::Replace { body, headers } => {
+                assert_eq!(&body[..], b"replaced");
+                assert_eq!(
+                    headers.get(http::header::CONTENT_TYPE).unwrap(),
+                    "text/plain"
+                );
+            }
+            other => panic!("unexpected verdict: {other:?}"),
+        }
     }
 }

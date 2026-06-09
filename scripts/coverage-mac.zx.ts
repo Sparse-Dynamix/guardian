@@ -66,4 +66,4 @@ for (const entry of fs.readdirSync(path.join(REPO_ROOT, "target"))) {
   }
 }
 
-await $`cargo llvm-cov report --text --ignore-filename-regex ${"target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs"} --fail-under-lines 90`;
+await $`cargo llvm-cov report --summary-only --ignore-filename-regex ${"target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs"} --fail-under-lines 90`;

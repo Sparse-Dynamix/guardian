@@ -7,9 +7,8 @@ use proxyapi::ca::Ssl;
 
 use crate::mkcert;
 use crate::system_trust::TrustStore;
-use crate::ui::Ui;
 
-pub fn require_admin(ui: &Ui, action: &str) -> Result<()> {
+pub fn require_admin(action: &str) -> Result<()> {
     if privileged() {
         return Ok(());
     }
@@ -21,22 +20,22 @@ pub fn require_admin(ui: &Ui, action: &str) -> Result<()> {
     let msg = format!(
         "{action} requires administrator privileges. Re-run with sudo, e.g. `sudo guardian install-system`."
     );
-    ui.error(&msg);
+    eprintln!("Error: {msg}");
     bail!("administrator privileges required");
 }
 
-pub fn run_install_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Result<()> {
-    require_admin(ui, "Installing the Guardian CA system-wide")?;
+pub fn run_install_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<()> {
+    require_admin("Installing the Guardian CA system-wide")?;
     std::fs::create_dir_all(ca_dir)
         .with_context(|| format!("failed to create {}", ca_dir.display()))?;
     Ssl::load_or_generate(ca_dir).context("failed to load/generate Guardian CA")?;
     invoke_mkcert(ca_dir, stores, "-install")?;
-    ui.success("Guardian CA install finished (see mkcert output above for details)");
+    eprintln!("Guardian CA install finished (see mkcert output above for details)");
     Ok(())
 }
 
-pub fn run_remove_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Result<()> {
-    require_admin(ui, "Removing the Guardian CA from system trust stores")?;
+pub fn run_remove_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<()> {
+    require_admin("Removing the Guardian CA from system trust stores")?;
     if !ca_dir.join(crate::ca::ROOT_CA_PEM).exists() {
         bail!(
             "Guardian CA not found at {}",
@@ -44,7 +43,7 @@ pub fn run_remove_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Resul
         );
     }
     invoke_mkcert(ca_dir, stores, "-uninstall")?;
-    ui.success("Guardian CA removal finished (see mkcert output above for details)");
+    eprintln!("Guardian CA removal finished (see mkcert output above for details)");
     Ok(())
 }
 
@@ -83,8 +82,7 @@ mod tests {
         if !privileged() {
             return;
         }
-        let ui = Ui::new(true);
-        require_admin(&ui, "test action").unwrap();
+        require_admin("test action").unwrap();
     }
 
     #[test]
@@ -92,8 +90,7 @@ mod tests {
         if privileged() {
             return;
         }
-        let ui = Ui::new(true);
-        let err = require_admin(&ui, "test action").unwrap_err();
+        let err = require_admin("test action").unwrap_err();
         assert!(
             err.to_string().contains("administrator"),
             "unexpected error: {err:#}"
@@ -105,9 +102,8 @@ mod tests {
         if privileged() {
             return;
         }
-        let ui = Ui::new(true);
         let dir = TempDir::new().unwrap();
-        assert!(run_install_system(dir.path(), &[TrustStore::System], &ui).is_err());
+        assert!(run_install_system(dir.path(), &[TrustStore::System]).is_err());
     }
 
     #[test]
@@ -115,9 +111,8 @@ mod tests {
         if privileged() {
             return;
         }
-        let ui = Ui::new(true);
         let dir = TempDir::new().unwrap();
-        assert!(run_remove_system(dir.path(), &[TrustStore::System], &ui).is_err());
+        assert!(run_remove_system(dir.path(), &[TrustStore::System]).is_err());
     }
 
     fn write_stub(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -133,6 +128,7 @@ mod tests {
 
     #[test]
     fn invoke_mkcert_fails_when_stub_exits_nonzero() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         #[cfg(unix)]
         let stub = write_stub(dir.path(), "fail.sh", "#!/bin/sh\nexit 1\n");
@@ -161,17 +157,17 @@ mod tests {
 
     #[test]
     fn run_install_system_succeeds_with_stub_mkcert_when_privileged() {
+        let _guard = crate::test_lock::env_test_lock();
         if !privileged() {
             return;
         }
         let dir = TempDir::new().unwrap();
-        let ui = Ui::new(true);
         let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
         #[cfg(unix)]
         let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
         #[cfg(unix)]
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
-        let result = run_install_system(dir.path(), &[TrustStore::System], &ui);
+        let result = run_install_system(dir.path(), &[TrustStore::System]);
         match prev {
             Some(value) => std::env::set_var("GUARDIAN_MKCERT_TEST", value),
             None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
@@ -182,6 +178,7 @@ mod tests {
 
     #[test]
     fn invoke_mkcert_accepts_stub_executable() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         #[cfg(unix)]
         let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
@@ -216,6 +213,7 @@ mod tests {
 
     #[test]
     fn invoke_mkcert_with_all_stores_omits_trust_stores_env() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
         #[cfg(unix)]
         let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
@@ -247,9 +245,8 @@ mod tests {
         if !privileged() {
             return;
         }
-        let ui = Ui::new(true);
         let dir = TempDir::new().unwrap();
-        let err = run_remove_system(dir.path(), &[TrustStore::System], &ui).unwrap_err();
+        let err = run_remove_system(dir.path(), &[TrustStore::System]).unwrap_err();
         assert!(err.to_string().contains("Guardian CA not found"));
     }
 }

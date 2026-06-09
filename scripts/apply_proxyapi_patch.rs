@@ -9,53 +9,75 @@ use walkdir::WalkDir;
 const PROXYAPI_VERSION: &str = "0.4.5";
 const CRATE_DIR: &str = "target/patch/proxyapi-0.4.5";
 const PATCH_FILE: &str = "patches/proxyapi+0.4.5.patch";
+const SWAP_PATCH_FILE: &str = "patches/proxyapi-tps-swap.patch";
 const STAMP_FILE: &str = "target/proxyapi-patch.stamp";
 
 pub fn apply_if_needed(manifest_dir: &Path) -> Result<()> {
     let crate_dir = manifest_dir.join(CRATE_DIR);
-    let patch_path = manifest_dir.join(PATCH_FILE);
+    let patch_paths = proxyapi_patch_paths(manifest_dir)?;
     let stamp_path = manifest_dir.join(STAMP_FILE);
-
-    if !patch_path.is_file() {
-        anyhow::bail!("missing patch file: {}", patch_path.display());
-    }
 
     if !crate_dir.join("Cargo.toml").is_file() {
         restore_pristine(&crate_dir)?;
-        apply_git_patch(&crate_dir, &patch_path)?;
-        write_stamp(&stamp_path, &patch_path)?;
+        apply_proxyapi_patches(&crate_dir, &patch_paths)?;
+        write_stamp(&stamp_path, &patch_paths)?;
         return Ok(());
     }
 
-    if patch_is_stale(&stamp_path, &patch_path)? {
+    if patch_is_stale(&stamp_path, &patch_paths)? {
         restore_pristine(&crate_dir)?;
-        apply_git_patch(&crate_dir, &patch_path)?;
-        write_stamp(&stamp_path, &patch_path)?;
+        apply_proxyapi_patches(&crate_dir, &patch_paths)?;
+        write_stamp(&stamp_path, &patch_paths)?;
     }
 
     Ok(())
 }
 
-fn write_stamp(stamp: &Path, patch: &Path) -> Result<()> {
+fn proxyapi_patch_paths(manifest_dir: &Path) -> Result<Vec<PathBuf>> {
+    let main = manifest_dir.join(PATCH_FILE);
+    if !main.is_file() {
+        anyhow::bail!("missing patch file: {}", main.display());
+    }
+    let mut paths = vec![main];
+    let swap = manifest_dir.join(SWAP_PATCH_FILE);
+    if swap.is_file() {
+        paths.push(swap);
+    }
+    Ok(paths)
+}
+
+fn apply_proxyapi_patches(crate_dir: &Path, patch_paths: &[PathBuf]) -> Result<()> {
+    for patch_path in patch_paths {
+        apply_git_patch(crate_dir, patch_path)?;
+    }
+    Ok(())
+}
+
+fn write_stamp(stamp: &Path, patches: &[PathBuf]) -> Result<()> {
     if let Some(parent) = stamp.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mtime = fs::metadata(patch)?.modified()?;
-    let encoded = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let encoded = newest_patch_mtime_nanos(patches)?;
     fs::write(stamp, encoded.to_string())?;
     Ok(())
 }
 
-fn patch_is_stale(stamp: &Path, patch: &Path) -> Result<bool> {
-    let patch_mtime = fs::metadata(patch)
-        .with_context(|| format!("stat {}", patch.display()))?
-        .modified()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+fn newest_patch_mtime_nanos(patches: &[PathBuf]) -> Result<u128> {
+    let mut newest = 0u128;
+    for patch in patches {
+        let mtime = fs::metadata(patch)
+            .with_context(|| format!("stat {}", patch.display()))?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        newest = newest.max(mtime);
+    }
+    Ok(newest)
+}
+
+fn patch_is_stale(stamp: &Path, patches: &[PathBuf]) -> Result<bool> {
+    let patch_mtime = newest_patch_mtime_nanos(patches)?;
     let stamp_mtime = match fs::read_to_string(stamp) {
         Ok(value) => value.trim().parse().unwrap_or(0),
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),

@@ -7,7 +7,6 @@ use x509_parser::parse_x509_certificate;
 use x509_parser::pem::parse_x509_pem;
 
 use crate::ca::ROOT_CA_PEM;
-use crate::ui::Ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustStore {
@@ -195,12 +194,12 @@ pub fn is_installed(ca_dir: &Path, stores: &[TrustStore]) -> Result<bool> {
     Ok(true)
 }
 
-pub fn run_check_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Result<bool> {
+pub fn run_check_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<bool> {
     if !ca_dir.join(ROOT_CA_PEM).exists() {
-        ui.warn(&format!(
-            "Guardian CA not found at {}; run guardian once to generate it",
+        eprintln!(
+            "Warning: Guardian CA not found at {}; run guardian once to generate it",
             ca_dir.join(ROOT_CA_PEM).display()
-        ));
+        );
         return Ok(false);
     }
 
@@ -213,9 +212,9 @@ pub fn run_check_system(ca_dir: &Path, stores: &[TrustStore], ui: &Ui) -> Result
             TrustStore::Java => "java",
         };
         if ok {
-            ui.success(&format!("{label}: Guardian CA is installed"));
+            eprintln!("{label}: Guardian CA is installed");
         } else {
-            ui.warn(&format!("{label}: Guardian CA is not installed"));
+            eprintln!("Warning: {label}: Guardian CA is not installed");
             all_ok = false;
         }
     }
@@ -284,7 +283,20 @@ mod tests {
     }
 
     #[test]
+    fn is_installed_empty_store_list_returns_false() {
+        let dir = generated_ca_dir();
+        assert!(!is_installed(dir.path(), &[]).unwrap());
+    }
+
+    #[test]
+    fn parse_stores_includes_nss() {
+        let stores = TrustStore::parse_all(&["nss".into()]);
+        assert_eq!(stores, vec![TrustStore::Nss]);
+    }
+
+    #[test]
     fn check_java_store_without_java_home_returns_false() {
+        let _guard = crate::test_lock::env_test_lock();
         let dir = generated_ca_dir();
         let prev = std::env::var_os("JAVA_HOME");
         std::env::remove_var("JAVA_HOME");
@@ -310,15 +322,19 @@ mod tests {
     #[test]
     fn run_check_system_warns_when_ca_missing() {
         let dir = TempDir::new().unwrap();
-        let ui = crate::ui::Ui::new(true);
-        assert!(!run_check_system(dir.path(), &[TrustStore::System], &ui).unwrap());
+        assert!(!run_check_system(dir.path(), &[TrustStore::System]).unwrap());
     }
 
     #[test]
     fn run_check_system_reports_uninstalled_stores() {
         let dir = generated_ca_dir();
-        let ui = crate::ui::Ui::new(true);
-        assert!(!run_check_system(dir.path(), &[TrustStore::System], &ui).unwrap());
+        assert!(!run_check_system(dir.path(), &[TrustStore::System]).unwrap());
+    }
+
+    #[test]
+    fn run_check_system_reports_nss_and_java_labels() {
+        let dir = generated_ca_dir();
+        assert!(!run_check_system(dir.path(), &[TrustStore::Nss, TrustStore::Java]).unwrap());
     }
 
     #[test]
@@ -338,6 +354,7 @@ mod tests {
 
     #[test]
     fn check_nss_store_runs_when_certutil_available() {
+        let _guard = crate::test_lock::env_test_lock();
         if which::which("certutil").is_err() {
             eprintln!("skipping: certutil not installed");
             return;
@@ -360,6 +377,7 @@ mod tests {
 
     #[test]
     fn check_java_store_falls_back_to_path_keytool() {
+        let _guard = crate::test_lock::env_test_lock();
         let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
         let keytool = if cfg!(windows) {
             jdk.join("bin/keytool.exe")
@@ -374,10 +392,12 @@ mod tests {
         let prev_home = std::env::var_os("JAVA_HOME");
         let prev_path = std::env::var_os("PATH");
         std::env::remove_var("JAVA_HOME");
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", jdk.join("bin").display(), "/usr/bin"),
-        );
+        let jdk_bin = jdk.join("bin");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let new_path =
+            std::env::join_paths([jdk_bin].into_iter().chain(std::env::split_paths(&path)))
+                .unwrap();
+        std::env::set_var("PATH", new_path);
         assert!(!check_java_store(dir.path()).unwrap());
         if let Some(value) = prev_home {
             std::env::set_var("JAVA_HOME", value);
@@ -391,6 +411,7 @@ mod tests {
 
     #[test]
     fn check_java_store_runs_when_portable_jdk_available() {
+        let _guard = crate::test_lock::env_test_lock();
         let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
         let keytool = if cfg!(windows) {
             jdk.join("bin/keytool.exe")
@@ -422,6 +443,7 @@ mod tests {
 
     #[test]
     fn is_store_installed_dispatches_java_store() {
+        let _guard = crate::test_lock::env_test_lock();
         let jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/jdk-17");
         let keytool = if cfg!(windows) {
             jdk.join("bin/keytool.exe")

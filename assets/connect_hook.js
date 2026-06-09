@@ -16,7 +16,7 @@ function globalExport(name) {
     return Module.getExportByName(null, name);
 }
 
-function filter(sa_family, addr, port) {
+function filter(sa_family, addr, port, host) {
     return {{FILTER}};
 }
 
@@ -195,7 +195,8 @@ function hookConnect(connect_p, send_p, recv_p) {
                 return;
             }
 
-            this.hook = filter(this.sa_family, this.addr, this.port);
+            var host = __guardianHostByIp[this.addr] || null;
+            this.hook = filter(this.sa_family, this.addr, this.port, host);
             if (!this.hook) {
                 return;
             }

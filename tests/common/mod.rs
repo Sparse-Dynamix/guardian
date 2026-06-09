@@ -3,12 +3,19 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tempfile::TempDir;
 
 const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
 const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbingo.org/get";
+
+#[derive(Clone, Default, Debug)]
+pub struct RecordedTpfRequest {
+    pub path_and_query: String,
+    pub body: Vec<u8>,
+}
 
 pub struct GuardianRun {
     pub exit_code: i32,
@@ -126,8 +133,11 @@ pub fn resolve_executable(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-fn curl_args(url: &str, ca_dir: Option<&Path>) -> Vec<String> {
+fn curl_args(url: &str, ca_dir: Option<&Path>, include_headers: bool) -> Vec<String> {
     let mut args = vec![curl_program(), "-sS".to_string()];
+    if include_headers {
+        args.push("-i".to_string());
+    }
     if cfg!(target_os = "macos") {
         args.push("--ipv4".to_string());
     }
@@ -206,21 +216,23 @@ pub fn run_guardian_direct_https() -> std::io::Result<GuardianRun> {
 
 #[derive(Clone)]
 pub struct GuardianOptions {
-    pub verbose: bool,
     pub port: Option<u16>,
     pub url: Option<String>,
     pub config: Option<PathBuf>,
     pub trypanophobe_filter: Option<String>,
+    pub trypanophobe_swap: bool,
+    pub curl_include_headers: bool,
 }
 
 impl Default for GuardianOptions {
     fn default() -> Self {
         Self {
-            verbose: false,
             port: None,
             url: None,
             config: None,
             trypanophobe_filter: None,
+            trypanophobe_swap: false,
+            curl_include_headers: false,
         }
     }
 }
@@ -235,9 +247,6 @@ pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<Guard
 fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
     let url = opts.url.clone().unwrap_or_else(smoke_url);
     let mut args = Vec::new();
-    if opts.verbose {
-        args.push("-v".to_string());
-    }
     if let Some(port) = opts.port {
         args.push("--port".to_string());
         args.push(port.to_string());
@@ -250,18 +259,16 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
         args.push("--tpf".to_string());
         args.push(tpf.clone());
     }
+    if opts.trypanophobe_swap {
+        args.push("--tps".to_string());
+    }
     args.push("--ca-dir".to_string());
     let ca_dir = TempDir::new()?;
     args.push(ca_dir.path().display().to_string());
     args.push("--".to_string());
     let ca_bundle = opts.trypanophobe_filter.is_some().then(|| ca_dir.path());
-    args.extend(curl_args(&url, ca_bundle));
-    let extra_env = if opts.verbose {
-        vec![("RUST_LOG", "guardian=trace")]
-    } else {
-        vec![]
-    };
-    run_guardian_with_args(&args, ca_dir, &extra_env)
+    args.extend(curl_args(&url, ca_bundle, opts.curl_include_headers));
+    run_guardian_with_args(&args, ca_dir, &[])
 }
 
 pub fn run_guardian_child_spawn() -> std::io::Result<GuardianRun> {
@@ -304,10 +311,45 @@ fn run_guardian_child_spawn_once() -> std::io::Result<GuardianRun> {
 pub struct TpfMockServer {
     pub pass_url: String,
     pub reject_url: String,
+    pub swap_url: String,
+    pub last_request: Arc<Mutex<RecordedTpfRequest>>,
+    pub requests: Arc<Mutex<Vec<RecordedTpfRequest>>>,
     _thread: std::thread::JoinHandle<()>,
 }
 
+fn parse_http_request(buf: &[u8]) -> (String, Vec<u8>) {
+    let n = buf.len();
+    let text = String::from_utf8_lossy(buf);
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default().to_string();
+    let path_and_query = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    let mut content_length = 0usize;
+    for line in lines.by_ref() {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("Content-Length:") {
+            content_length = rest.trim().parse().unwrap_or(0);
+        }
+    }
+    let header_end = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
+    let body = if content_length > 0 {
+        buf[header_end..header_end.saturating_add(content_length)].to_vec()
+    } else {
+        buf[header_end..n].to_vec()
+    };
+    (path_and_query, body)
+}
+
 pub fn spawn_tpf_mock() -> TpfMockServer {
+    spawn_tpf_mock_with_swap_body(b"SWAPPED_BODY")
+}
+
+pub fn spawn_tpf_mock_with_swap_body(swap_body: &[u8]) -> TpfMockServer {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -318,23 +360,42 @@ pub fn spawn_tpf_mock() -> TpfMockServer {
     let base = format!("http://127.0.0.1:{port}");
     let pass_url = format!("{base}/pass");
     let reject_url = format!("{base}/reject");
+    let swap_url = format!("{base}/swap");
+    let last_request = Arc::new(Mutex::new(RecordedTpfRequest::default()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let swap_body = swap_body.to_vec();
     listener.set_nonblocking(true).expect("set_nonblocking");
+    let last = Arc::clone(&last_request);
+    let all = Arc::clone(&requests);
     let thread = thread::spawn(move || loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let mut buf = [0u8; 8192];
+                let mut buf = [0u8; 65536];
                 let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let (status, body) = if req.contains(" /reject ") {
-                    (503, r#"{"safe":false}"#)
+                let (path_and_query, body) = parse_http_request(&buf[..n]);
+                let recorded = RecordedTpfRequest {
+                    path_and_query: path_and_query.clone(),
+                    body: body.clone(),
+                };
+                {
+                    let mut last = last.lock().unwrap();
+                    *last = recorded.clone();
+                    all.lock().unwrap().push(recorded);
+                }
+                let path = path_and_query.split('?').next().unwrap_or("");
+                let (status, resp_body, content_type) = if path.ends_with("/reject") {
+                    (503, Vec::new(), "text/plain")
+                } else if path.ends_with("/swap") {
+                    (200, swap_body.clone(), "text/markdown; charset=utf-8")
                 } else {
-                    (200, r#"{"safe":true}"#)
+                    (200, Vec::new(), "text/plain")
                 };
                 let response = format!(
-                        "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len(),
-                    );
+                    "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    resp_body.len(),
+                );
                 let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&resp_body);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
@@ -345,6 +406,9 @@ pub fn spawn_tpf_mock() -> TpfMockServer {
     TpfMockServer {
         pass_url,
         reject_url,
+        swap_url,
+        last_request,
+        requests,
         _thread: thread,
     }
 }

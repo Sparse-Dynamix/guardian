@@ -31,7 +31,7 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
         ca_dir: settings.ca_dir.clone(),
         upstream_tls: Default::default(),
         intercept: None,
-        body_capture_limit: Some(settings.filter_body_limit),
+        body_capture_limit: None,
         replay_rx: None,
     };
 
@@ -43,7 +43,7 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
             .start(cancel_for_proxy.clone().cancelled_owned())
             .await
         {
-            tracing::error!(target: "guardian", "proxy error: {e}");
+            eprintln!("Error: proxy failed: {e:#}");
             cancel_for_proxy.cancel();
         }
     });

@@ -405,11 +405,10 @@ mod tests {
             bind: "127.0.0.1".parse().unwrap(),
             port: None,
             trypanophobe_filter: None,
+            trypanophobe_swap: false,
             payload: None,
             filter: String::new(),
-            no_color: false,
             filter_timeout_secs: 10,
-            filter_body_limit: 1_048_576,
             block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
@@ -417,8 +416,6 @@ mod tests {
             proxy_ready_timeout_secs: 5,
             proxy_ready_poll_ms: 10,
             process_poll_interval_ms: 50,
-            tracing_prefix: "guardian: ".into(),
-            tracing_default_level: "guardian=debug".into(),
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],
@@ -430,6 +427,7 @@ mod tests {
 
     #[test]
     fn ensure_artifacts_builds_java_truststore_when_jdk_available() {
+        let _guard = crate::test_lock::env_test_lock();
         use crate::config::Settings;
         use proxyapi::ca::Ssl;
         use tempfile::TempDir;
@@ -456,11 +454,10 @@ mod tests {
             bind: "127.0.0.1".parse().unwrap(),
             port: None,
             trypanophobe_filter: None,
+            trypanophobe_swap: false,
             payload: None,
             filter: String::new(),
-            no_color: false,
             filter_timeout_secs: 10,
-            filter_body_limit: 1_048_576,
             block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
@@ -468,8 +465,6 @@ mod tests {
             proxy_ready_timeout_secs: 5,
             proxy_ready_poll_ms: 10,
             process_poll_interval_ms: 50,
-            tracing_prefix: "guardian: ".into(),
-            tracing_default_level: "guardian=debug".into(),
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],

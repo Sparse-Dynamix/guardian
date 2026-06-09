@@ -230,3 +230,21 @@ where
 pub fn is_process_replaced(reason: FridaSessionDetachReason) -> bool {
     reason == FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use frida_sys::FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED;
+
+    #[test]
+    fn is_process_replaced_detects_replacement() {
+        assert!(is_process_replaced(
+            FridaSessionDetachReason_FRIDA_SESSION_DETACH_REASON_PROCESS_REPLACED
+        ));
+    }
+
+    #[test]
+    fn is_process_replaced_rejects_other_reasons() {
+        assert!(!is_process_replaced(0));
+    }
+}

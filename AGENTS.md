@@ -40,7 +40,7 @@ flowchart TB
     Forward --> TLS --> Filter
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only**; redirect to `bind_ip:proxy_port`; synthetic `CONNECT`. Default filter: IPv4 TCP except `ignored_ports`.
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only**; redirect to `bind_ip:proxy_port`; synthetic `CONNECT`. Default filter: IPv4 TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules.
 
 **Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. HTTP/HTTPS responses buffered and checked; server→client WS `Text`/`Binary` frames checked.
 
@@ -68,6 +68,7 @@ guardian/
     injector.rs       # Frida
     ca.rs
   patches/proxyapi+0.4.5.patch   # SNI cert, Connection: close, ContentFilter
+  patches/proxyapi-tps-swap.patch # FilterVerdict::Replace + header/body swap
   scripts/smoke/
     tpf-mock-server.ts   # Express /pass (200) + /reject (503)
     tpf-cases.ts
@@ -76,7 +77,7 @@ guardian/
 
 ## Trypanophobe API
 
-POST JSON to `--tpf` URL. `200` = allow; any other status = block (fail closed). Optional `{"safe":false}` in body also blocks.
+POST **raw bytes** to `--tpf` URL. HTTP responses add `?url=<request-url>` only. `200` = allow; any other status = block (fail closed). With `--tps` / `trypanophobe_swap`, a `200` response body and headers replace what the harness sees.
 
 ## Build
 
@@ -98,7 +99,7 @@ cargo build --release
 npm run smoke
 ```
 
-TPF mock endpoints: `POST /pass` → 200 `{"safe":true}`; `POST /reject` → 503 `{"safe":false}`.
+TPF mock endpoints: `POST /pass` → 200 empty; `POST /reject` → 503; `POST /swap` → 200 `SWAPPED_BODY`; `POST /image-swap` → 200 markdown (PNG body in POST).
 
 ## Configuration reference
 
@@ -107,13 +108,12 @@ TPF mock endpoints: `POST /pass` → 200 `{"safe":true}`; `POST /reject` → 503
 | `trypanophobe_filter` | `--tpf` | `GUARDIAN_TRYPANOPHOBE_FILTER` | (unset) | Filter endpoint URL |
 | `bind` | `-b, --bind` | `GUARDIAN_BIND` | `127.0.0.1` | Proxy bind IPv4 |
 | `port` | `-p, --port` | `GUARDIAN_PORT` | (unset) | Fixed proxy port |
-| `filter` | `--filter` | `GUARDIAN_FILTER` | denylist | Connect-hook JS expression |
-| `ignored_ports` | `--ignored-ports` | — | see toml | Ports left unhooked |
+| `filter` | `--filter` | `GUARDIAN_FILTER` | denylist | Connect-hook JS (`sa_family`, `addr`, `port`, `host`) |
+| `ignored_ports` | `--ignored-ports` | — | see toml | Ports left unhooked when `--filter` is unset |
+| `trypanophobe_swap` | `--tps` | — | `false` | Swap TPF 200 body/headers into harness (requires `--tpf`) |
 | `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.guardian` | CA directory |
 | `filter_timeout_secs` | — | `GUARDIAN_FILTER_TIMEOUT_SECS` | `10` | Filter HTTP timeout |
-| `filter_body_limit` | — | `GUARDIAN_FILTER_BODY_LIMIT` | `1048576` | Max bytes per filter POST |
 | `block_message` | — | `GUARDIAN_BLOCK_MESSAGE` | see toml | Substitution text on block |
-| `no_color` | `--no-color` | — | `false` | Disable colored stderr |
 
 Shipped defaults: [`config/guardian.toml`](config/guardian.toml).
 

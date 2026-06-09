@@ -17,7 +17,6 @@ fn config_file_settings_apply() {
     let cfg_path = dir.path().join("guardian.toml");
     let mut f = fs::File::create(&cfg_path).unwrap();
     writeln!(f, "bind = \"127.0.0.1\"").unwrap();
-    writeln!(f, "filter_body_limit = 4096").unwrap();
 
     let run = run_guardian_with_options(GuardianOptions {
         config: Some(cfg_path),

@@ -22,4 +22,4 @@ const IGNORED_COVERAGE =
 
 await $`cargo llvm-cov clean`;
 await $`cargo llvm-cov test --features ws-smoke -- --test-threads=1`;
-await $`cargo llvm-cov report --text --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90`;
+await $`cargo llvm-cov report --summary-only --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90`;

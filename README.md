@@ -48,30 +48,23 @@ echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 
 | Flag | Description |
 |------|-------------|
-| `--tpf`, `--trypanophobe-filter` | Trypanophobe POST endpoint (`200` = safe, non-`200` = block) |
+| `--tpf`, `--trypanophobe-filter` | Trypanophobe filter endpoint (`200` = allow, non-`200` = block) |
+| `--tps`, `--trypanophobe-swap` | On `200`, replace harness-visible body/headers with the TPF response (requires `--tpf`) |
 | `--payload` | Explicit payload string (payload mode) |
 | `-p, --port` | Proxy listen port (MITM + `--tpf`; default: auto) |
 | `-b, --bind` | Proxy bind IPv4 (default: `127.0.0.1`) |
 | `--ca-dir` | Guardian data directory (default: `~/.guardian`) |
-| `--filter` | Connect-hook filter expression |
-| `--no-color` | Disable colored stderr messages |
-| `-v` / `RUST_LOG` | Internal diagnostics on stderr |
+| `--filter` | Connect-hook JS expression (`sa_family`, `addr`, `port`, `host`) |
+| `--ignored-ports` | TCP ports to leave unhooked when `--filter` is unset (comma-separated) |
 | `--config` | Extra config file path |
 
-## Trypanophobe filter API (v1 PoC)
+## Trypanophobe filter API
 
-`POST <tpf_url>` with JSON body:
+`POST <tpf_url>` with the **raw response bytes** as the body (never truncated).
 
-```json
-{
-  "kind": "http_response | ws_frame | tool_payload",
-  "payload": "<base64>",
-  "metadata": { }
-}
-```
-
-- **HTTP 200** — content is safe; forwarded to the harness (or filter response body printed in payload mode).
-- **Non-200** — blocked; Guardian substitutes `Blocked by Guardian: content failed safety check` (configurable via `block_message`).
+- HTTP responses also include `?url=<request-url>` on the query string.
+- **HTTP 200** — allow; without `--tps`, the original content is forwarded. With `--tps`, Guardian swaps in the TPF response body and headers.
+- **Non-200** — block; Guardian substitutes `Blocked by Guardian: content failed safety check` (configurable via `block_message`).
 
 ## System CA trust
 

@@ -8,7 +8,7 @@ fn payload_pass_with_tpf() {
     let run = run_guardian_payload(&["--tpf", &mock.pass_url, "--payload", "hello"], None)
         .expect("spawn guardian");
     assert_eq!(run.exit_code, 0);
-    assert!(run.stdout.contains(r#""safe":true"#));
+    assert_eq!(run.stdout, "hello");
 }
 
 #[test]

@@ -35,7 +35,7 @@ runCargo([
 runCargo([
   "llvm-cov",
   "report",
-  "--text",
+  "--summary-only",
   "--ignore-filename-regex",
   IGNORED_COVERAGE,
   "--fail-under-lines",

@@ -5,16 +5,19 @@ import { $, usePowerShell } from "zx";
 import { tpfSmokeCases } from "./tpf-cases.ts";
 import type { TpfSmokeCase } from "./tpf-cases.ts";
 import {
+  assertContentType,
   assertExit,
   assertNoJsonlOnStderr,
   assertStdoutContains,
   assertStdoutEquals,
+  assertStdoutNotContains,
   assertStdoutNonempty,
 } from "./assert.ts";
 import type { TpfMockServer } from "./tpf-mock-server.ts";
 import { assertGuardianBuilt, platformConfig } from "./platform.ts";
 import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
+import { resolveExecutable } from "../lib/resolve-exec.ts";
 
 if (process.platform === "win32") {
   usePowerShell();
@@ -23,8 +26,8 @@ if (process.platform === "win32") {
 const DEFAULT_SMOKE_URL = "http://httpbingo.org/get";
 const SMOKE_RETRIES = 3;
 
-function smokeUrl(): string {
-  return process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
+function smokeUrl(caseUrl?: string): string {
+  return caseUrl ?? process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
 }
 
 function makeCaDir(): string {
@@ -37,6 +40,8 @@ function tpfUrl(
 ): string | undefined {
   if (which === "pass") return server.passUrl;
   if (which === "reject") return server.rejectUrl;
+  if (which === "swap") return server.swapUrl;
+  if (which === "image-swap") return server.imageSwapUrl;
   return undefined;
 }
 
@@ -46,19 +51,66 @@ interface RunResult {
   stderrFile: string;
 }
 
-function curlArgs(url: string, failOnHttpError: boolean): string[] {
-  const config = platformConfig();
-  const args = [failOnHttpError ? "-sSf" : "-sS"];
+function curlArgs(
+  config: ReturnType<typeof platformConfig>,
+  url: string,
+  caDir: string,
+  includeHeaders: boolean,
+  failOnHttpError: boolean,
+): string[] {
+  const args = [config.curl, failOnHttpError ? "-sSf" : "-sS"];
+  if (includeHeaders) {
+    args.push("-i");
+  }
   if (hostPlatform() === "mac") {
     args.push("--ipv4");
   }
+  if (url.startsWith("https://")) {
+    args.push("--cacert", path.join(caDir, "guardian-ca-bundle.pem"));
+  }
   args.push(url);
-  return [config.curl, ...args];
+  return args;
+}
+
+function childArgs(
+  config: ReturnType<typeof platformConfig>,
+  c: TpfSmokeCase,
+  url: string,
+  caDir: string,
+): string[] {
+  if (c.printenvVar) {
+    if (hostPlatform() === "win") {
+      return [resolveExecutable("cmd.exe"), "/c", `echo %${c.printenvVar}%`];
+    }
+    const sh = resolveExecutable("sh");
+    return [sh, "-c", `echo $${c.printenvVar}`];
+  }
+
+  const failOnHttpError = c.tpf !== "reject";
+  const curl = curlArgs(
+    config,
+    url,
+    caDir,
+    c.curlIncludeHeaders ?? false,
+    failOnHttpError,
+  );
+
+  if (hostPlatform() === "win") {
+    return [resolveExecutable("cmd.exe"), "/c", curl.join(" ")];
+  }
+  if (config.childWrapper) {
+    return [config.childWrapper, ...curl];
+  }
+  if (config.childShell) {
+    return [...config.childShell, curl.join(" ")];
+  }
+  return curl;
 }
 
 async function runGuardianProcess(
   guardianArgs: string[],
   stdin?: string,
+  env?: Record<string, string>,
 ): Promise<RunResult> {
   const config = platformConfig();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guardian-tpf-run-"));
@@ -69,6 +121,7 @@ async function runGuardianProcess(
     cwd: REPO_ROOT,
     quiet: true,
     nothrow: true,
+    env: { ...process.env, ...env },
     ...(stdin !== undefined
       ? { input: stdin }
       : { stdio: ["ignore", "pipe", "pipe"] as const }),
@@ -93,11 +146,14 @@ async function runPayloadCase(
   if (url) {
     args.push("--tpf", url);
   }
+  if (c.tps) {
+    args.push("--tps");
+  }
   if (c.useStdin) {
-    return runGuardianProcess(args, "test\n");
+    return runGuardianProcess(args, "test\n", c.env);
   }
   args.push("--payload", "hello");
-  return runGuardianProcess(args);
+  return runGuardianProcess(args, undefined, c.env);
 }
 
 async function runMitmCase(
@@ -105,14 +161,18 @@ async function runMitmCase(
   server: TpfMockServer,
   url: string,
 ): Promise<RunResult> {
+  const config = platformConfig();
   const caDir = makeCaDir();
   const args: string[] = ["--ca-dir", caDir];
   const tpf = tpfUrl(server, c.tpf);
   if (tpf) {
     args.push("--tpf", tpf);
   }
-  args.push("--", ...curlArgs(url, c.tpf !== "reject"));
-  return runGuardianProcess(args);
+  if (c.tps) {
+    args.push("--tps");
+  }
+  args.push("--", ...childArgs(config, c, url, caDir));
+  return runGuardianProcess(args, undefined, c.env);
 }
 
 async function runCase(
@@ -135,6 +195,12 @@ async function runCase(
       }
       if (c.expectStdoutContains) {
         assertStdoutContains(result.stdoutFile, c.expectStdoutContains);
+      }
+      if (c.expectStdoutNotContains) {
+        assertStdoutNotContains(result.stdoutFile, c.expectStdoutNotContains);
+      }
+      if (c.expectContentType) {
+        assertContentType(result.stdoutFile, c.expectContentType);
       }
       if (c.expectStdoutEquals !== undefined) {
         assertStdoutEquals(result.stdoutFile, c.expectStdoutEquals);
@@ -165,8 +231,8 @@ export async function runTpfSmokeCases(server: TpfMockServer): Promise<void> {
   const config = platformConfig();
   assertGuardianBuilt(config);
 
-  const url = smokeUrl();
   for (const c of tpfSmokeCases) {
+    const url = smokeUrl(c.smokeUrl);
     await runCase(c, server, url);
   }
   console.log("All TPF smoke cases passed.");

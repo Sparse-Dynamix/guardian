@@ -22,11 +22,35 @@ export function assertStdoutContains(file: string, substring: string): void {
   }
 }
 
+export function assertStdoutNotContains(
+  file: string,
+  substrings: string[],
+): void {
+  const stdout = fs.readFileSync(file, "utf8");
+  for (const substring of substrings) {
+    if (stdout.includes(substring)) {
+      throw new Error(
+        `ASSERT stdout: expected not to contain ${JSON.stringify(substring)}\n--- stdout ---\n${stdout}`,
+      );
+    }
+  }
+}
+
 export function assertStdoutEquals(file: string, expected: string): void {
   const stdout = fs.readFileSync(file, "utf8");
   if (stdout !== expected) {
     throw new Error(
       `ASSERT stdout: expected ${JSON.stringify(expected)}, got ${JSON.stringify(stdout)}`,
+    );
+  }
+}
+
+export function assertContentType(file: string, expected: string): void {
+  const stdout = fs.readFileSync(file, "utf8");
+  const re = new RegExp(`content-type:\\s*${expected}`, "i");
+  if (!re.test(stdout)) {
+    throw new Error(
+      `ASSERT headers: expected Content-Type ${JSON.stringify(expected)}\n--- stdout ---\n${stdout}`,
     );
   }
 }

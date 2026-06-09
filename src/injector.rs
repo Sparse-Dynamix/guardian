@@ -142,14 +142,12 @@ pub fn run_injection_coordinated(
         {
             let tx = event_tx.clone();
             move |pid| {
-                tracing::debug!(target: "guardian", "child-added pid={pid}");
                 let _ = tx.send(ProcessEvent::ChildAdded(pid));
             }
         },
         {
             let tx = event_tx.clone();
             move |pid| {
-                tracing::debug!(target: "guardian", "child-removed pid={pid}");
                 let _ = tx.send(ProcessEvent::ChildRemoved(pid));
             }
         },
@@ -371,12 +369,11 @@ mod tests {
             bind: Ipv4Addr::LOCALHOST,
             port: None,
             trypanophobe_filter: Some("http://127.0.0.1:1/pass".into()),
+            trypanophobe_swap: false,
             payload: None,
             filter: "true".to_string(),
             ca_dir: std::path::PathBuf::from("/tmp/guardian-test-ca"),
-            no_color: true,
             filter_timeout_secs: 10,
-            filter_body_limit: 1_048_576,
             block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
@@ -389,8 +386,6 @@ mod tests {
             java_truststore_password: "guardian".to_string(),
             deno_tls_ca_store: "system,mozilla".to_string(),
             node_options_append: "--use-openssl-ca".to_string(),
-            tracing_prefix: "guardian: ".to_string(),
-            tracing_default_level: "guardian=debug".to_string(),
             program: "true".to_string(),
             args: vec![],
             trust_stores: vec!["system".into()],
@@ -398,22 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn hook_bundle_uses_default_denylist_filter() {
-        use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
+    fn hook_bundle_includes_host_in_filter_call() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let bundle = build_hook_bundle(9999, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains("__guardianHostByIp"));
+        assert!(bundle
+            .connect_hook
+            .contains("filter(this.sa_family, this.addr, this.port, host)"));
+    }
 
-        let settings = test_settings();
-        let ca = CaTrust::from_settings(&settings);
-        let filter = connect_filter_from_ports(DEFAULT_IGNORED_PORTS);
-        let bundle = build_hook_bundle(9999, &filter, Ipv4Addr::LOCALHOST, &ca).unwrap();
-        assert!(bundle.connect_hook.contains("isStreamSocket"));
-        assert!(bundle.connect_hook.contains("9999"));
-        assert!(bundle.connect_hook.contains("includes(port)"));
+    #[test]
+    fn hook_bundle_substitutes_literal_host_filter() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let expr = r#"host === "api.example.com""#;
+        let bundle = build_hook_bundle(12345, expr, Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains(expr));
+    }
+
+    #[test]
+    fn hook_bundle_substitutes_regex_host_filter() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let expr = r#"host && /\.example\.com$/.test(host)"#;
+        let bundle = build_hook_bundle(12345, expr, Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains(expr));
     }
 
     #[test]
     fn hook_bundle_substitutes_port_and_bind() {
-        let settings = test_settings();
-        let ca = CaTrust::from_settings(&settings);
+        let ca = CaTrust::from_settings(&test_settings());
         let bundle = build_hook_bundle(12345, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
         assert!(bundle.connect_hook.contains("12345"));
         assert!(bundle.connect_hook.contains("true"));
