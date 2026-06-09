@@ -47,6 +47,7 @@ fn interrupt_exits_130_and_stops_child() {
         return;
     }
 
+    let _mitm_guard = common::acquire_mitm_test_lock();
     let ca_dir = tempfile::TempDir::new().expect("ca dir");
     let mock = common::spawn_tpf_mock();
     let bin = common::guardian_bin();

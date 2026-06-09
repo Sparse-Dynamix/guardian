@@ -12,3 +12,13 @@ pub(crate) fn env_test_lock() -> MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::env_test_lock;
+
+    #[test]
+    fn env_test_lock_can_be_acquired() {
+        let _guard = env_test_lock();
+    }
+}

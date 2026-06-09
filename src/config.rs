@@ -92,12 +92,22 @@ pub struct Settings {
     pub trust_stores: Vec<String>,
 }
 
+fn home_dir_for_tilde() -> Result<PathBuf> {
+    for key in ["USERPROFILE", "HOME"] {
+        if let Some(home) = std::env::var_os(key) {
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+        }
+    }
+    dirs::home_dir().context("home directory not found (required for ~ paths)")
+}
+
 pub fn expand_tilde(path: &str) -> Result<PathBuf> {
     if let Some(rest) = path.strip_prefix("~/") {
-        let home = dirs::home_dir().context("home directory not found (required for ~ paths)")?;
-        Ok(home.join(rest))
+        Ok(home_dir_for_tilde()?.join(rest))
     } else if path == "~" {
-        dirs::home_dir().context("home directory not found (required for ~ path)")
+        home_dir_for_tilde()
     } else {
         Ok(PathBuf::from(path))
     }
@@ -639,6 +649,59 @@ mod tests {
     fn resolve_program_missing_absolute_path_errors() {
         let err = resolve_program("/nonexistent/guardian-test-prog").unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn load_settings_merges_user_guardian_toml() {
+        let _guard = crate::test_lock::env_test_lock();
+        let home = TempDir::new().unwrap();
+        let user_cfg = home.path().join(".guardian");
+        fs::create_dir_all(&user_cfg).unwrap();
+        fs::write(
+            user_cfg.join("guardian.toml"),
+            "filter_timeout_secs = 777\n",
+        )
+        .unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        #[cfg(windows)]
+        let prev_profile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", home.path());
+        #[cfg(windows)]
+        std::env::set_var("USERPROFILE", home.path());
+        let mut argv = vec!["guardian", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        if let Some(value) = prev_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        #[cfg(windows)]
+        if let Some(value) = prev_profile {
+            std::env::set_var("USERPROFILE", value);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        assert_eq!(settings.filter_timeout_secs, 777);
+    }
+
+    #[test]
+    fn merge_tpf_ignores_empty_string_in_file() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        fs::write(&cfg_path, "trypanophobe_filter = \"\"\n").unwrap();
+        let cli = Cli::try_parse_from([
+            "guardian",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--payload",
+            "x",
+        ])
+        .unwrap();
+        let settings = resolve_payload_settings(&cli).unwrap();
+        assert!(settings.trypanophobe_filter.is_none());
     }
 
     #[test]

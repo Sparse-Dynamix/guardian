@@ -22,6 +22,7 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
     let url = smoke_url();
     let inner = format!("{curl} -sSf '{url}'");
 
+    let _mitm_guard = common::acquire_mitm_test_lock();
     let ca_dir = TempDir::new().expect("ca dir");
     let mock = spawn_tpf_mock();
     let mut child = Command::new(common::guardian_bin());

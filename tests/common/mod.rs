@@ -3,13 +3,23 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
 const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
 const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbingo.org/get";
+
+static MITM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn acquire_mitm_test_lock() -> Option<MutexGuard<'static, ()>> {
+    Some(MITM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn mitm_test_lock() -> Option<MutexGuard<'static, ()>> {
+    acquire_mitm_test_lock()
+}
 
 #[derive(Clone, Default, Debug)]
 pub struct RecordedTpfRequest {
@@ -159,6 +169,7 @@ pub fn run_guardian_echo_env_var(
     java_home: Option<&Path>,
     tpf_url: Option<&str>,
 ) -> std::io::Result<GuardianRun> {
+    let _mitm_guard = tpf_url.is_some().then(mitm_test_lock).flatten();
     let ca_dir = TempDir::new()?;
     let child_args: Vec<String> = if cfg!(windows) {
         vec![cmd_program(), "/c".to_string(), format!("echo %{}%", var)]
@@ -238,10 +249,17 @@ impl Default for GuardianOptions {
 }
 
 pub fn run_guardian_with_options(opts: GuardianOptions) -> std::io::Result<GuardianRun> {
-    run_guardian_http_with_retry(
-        || run_guardian_with_options_once(&opts),
-        |run| child_stdout_ok(run),
-    )
+    run_guardian_http_with_retry(|| run_guardian_with_options_once(&opts), child_stdout_ok)
+}
+
+pub fn run_guardian_with_options_until<F>(
+    opts: GuardianOptions,
+    is_complete: F,
+) -> std::io::Result<GuardianRun>
+where
+    F: FnMut(&GuardianRun) -> bool,
+{
+    run_guardian_http_with_retry(|| run_guardian_with_options_once(&opts), is_complete)
 }
 
 fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
@@ -345,6 +363,22 @@ fn parse_http_request(buf: &[u8]) -> (String, Vec<u8>) {
     (path_and_query, body)
 }
 
+pub fn wait_for_tpf_url_query(mock: &TpfMockServer, timeout: Duration) -> RecordedTpfRequest {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let requests = mock.requests.lock().unwrap();
+        if let Some(r) = requests.iter().find(|r| r.path_and_query.contains("url=")) {
+            return r.clone();
+        }
+        let recorded: Vec<_> = requests.iter().map(|r| r.path_and_query.clone()).collect();
+        drop(requests);
+        if Instant::now() >= deadline {
+            panic!("expected TPF POST with url= query; recorded paths: {recorded:?}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 pub fn spawn_tpf_mock() -> TpfMockServer {
     spawn_tpf_mock_with_swap_body(b"SWAPPED_BODY")
 }
@@ -403,6 +437,7 @@ pub fn spawn_tpf_mock_with_swap_body(swap_body: &[u8]) -> TpfMockServer {
             Err(_) => break,
         }
     });
+    thread::sleep(Duration::from_millis(50));
     TpfMockServer {
         pass_url,
         reject_url,
@@ -411,6 +446,17 @@ pub fn spawn_tpf_mock_with_swap_body(swap_body: &[u8]) -> TpfMockServer {
         requests,
         _thread: thread,
     }
+}
+
+pub fn run_guardian_payload_until<F>(
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    is_complete: F,
+) -> std::io::Result<GuardianRun>
+where
+    F: FnMut(&GuardianRun) -> bool,
+{
+    run_guardian_http_with_retry(|| run_guardian_payload(args, stdin), is_complete)
 }
 
 pub fn run_guardian_payload(args: &[&str], stdin: Option<&[u8]>) -> std::io::Result<GuardianRun> {
@@ -469,6 +515,11 @@ fn run_guardian_with_args(
     ca_dir: TempDir,
     extra_env: &[(&str, &str)],
 ) -> std::io::Result<GuardianRun> {
+    let _mitm_guard = args
+        .windows(2)
+        .any(|w| w[0] == "--tpf")
+        .then(mitm_test_lock)
+        .flatten();
     let bin = guardian_bin();
     assert!(
         bin.is_file(),
@@ -508,7 +559,7 @@ fn run_guardian_with_args(
     })
 }
 
-const GUARDIAN_HTTP_RETRIES: usize = 3;
+const GUARDIAN_HTTP_RETRIES: usize = 5;
 
 fn run_guardian_http_with_retry<F, P>(
     mut run_once: F,

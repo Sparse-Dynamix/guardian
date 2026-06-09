@@ -67,6 +67,9 @@ function curlArgs(
   }
   if (url.startsWith("https://")) {
     args.push("--cacert", path.join(caDir, "guardian-ca-bundle.pem"));
+    if (hostPlatform() === "win") {
+      args.push("--ipv4", "--ssl-no-revoke");
+    }
   }
   args.push(url);
   return args;

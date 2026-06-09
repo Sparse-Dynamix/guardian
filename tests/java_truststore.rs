@@ -12,6 +12,7 @@ fn java_truststore_created_when_keytool_available() {
         return;
     };
 
+    let _mitm_guard = common::acquire_mitm_test_lock();
     let ca_dir = tempfile::TempDir::new().expect("ca dir");
     let mock = spawn_tpf_mock();
     let url = common::smoke_url();

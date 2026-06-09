@@ -247,4 +247,28 @@ mod tests {
     fn is_process_replaced_rejects_other_reasons() {
         assert!(!is_process_replaced(0));
     }
+
+    #[test]
+    fn frida_callbacks_ignore_null_handles() {
+        unsafe {
+            on_child_added(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            on_child_removed(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            on_session_detached(
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            destroy_device_callbacks(std::ptr::null_mut(), std::ptr::null_mut());
+            destroy_session_callback(std::ptr::null_mut(), std::ptr::null_mut());
+        }
+    }
 }

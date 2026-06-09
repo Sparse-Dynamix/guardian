@@ -200,10 +200,10 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -211,6 +211,17 @@ mod tests {
     struct MockRecord {
         body: Vec<u8>,
         query: String,
+    }
+
+    fn wait_for_mock_ready(port: u16) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("mock server did not start on port {port}");
     }
 
     fn spawn_mock(
@@ -263,6 +274,7 @@ mod tests {
                 }
             }
         });
+        wait_for_mock_ready(port);
         format!("http://127.0.0.1:{port}/pass")
     }
 
@@ -274,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn check_tool_payload_200_allowed_without_swap() {
         let url = spawn_mock(200, "", None, None);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let client = client_for(&url, false);
         let outcome = client
             .check(FilterInput::ToolPayload { bytes: b"hello" })
@@ -286,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn check_tool_payload_reject_status_blocks() {
         let url = spawn_mock(503, "", None, None);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let client = client_for(&url, false);
         let outcome = client
             .check(FilterInput::ToolPayload { bytes: b"x" })
@@ -304,7 +316,7 @@ mod tests {
     async fn check_http_posts_raw_body_with_url_query() {
         let record = Arc::new(Mutex::new(MockRecord::default()));
         let url = spawn_mock(200, "", None, Some(record.clone()));
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let client = client_for(&url, false);
         let _ = client
             .check(FilterInput::HttpResponse {
@@ -322,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn check_swap_returns_body_and_headers() {
         let url = spawn_mock(200, "swapped", Some("text/markdown"), None);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let client = client_for(&url, true);
         let outcome = client
             .check(FilterInput::ToolPayload { bytes: b"x" })
@@ -355,10 +367,68 @@ mod tests {
         assert!(matches!(verdict, FilterVerdict::Block { .. }));
     }
 
+    fn payload_settings(tpf: Option<&str>, swap: bool, payload: &str) -> crate::config::Settings {
+        crate::config::Settings {
+            bind: "127.0.0.1".parse().unwrap(),
+            port: None,
+            trypanophobe_filter: tpf.map(str::to_string),
+            trypanophobe_swap: swap,
+            payload: Some(payload.into()),
+            filter: String::new(),
+            ca_dir: std::path::PathBuf::from("/tmp/guardian-test"),
+            filter_timeout_secs: 5,
+            block_message: DEFAULT_BLOCK_MESSAGE.to_string(),
+            port_min: 1024,
+            port_max: 65535,
+            proxy_event_channel_capacity: 100,
+            proxy_ready_timeout_secs: 5,
+            proxy_ready_poll_ms: 10,
+            process_poll_interval_ms: 50,
+            ca_bundle_name: "guardian-ca-bundle.pem".into(),
+            java_truststore_name: "guardian-java-truststore.p12".into(),
+            java_truststore_password: "guardian".into(),
+            deno_tls_ca_store: "system,mozilla".into(),
+            node_options_append: "--use-openssl-ca".into(),
+            program: String::new(),
+            args: vec![],
+            trust_stores: vec!["system".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn run_payload_without_tpf_echoes() {
+        let settings = payload_settings(None, false, "hello");
+        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_payload_allowed_returns_zero() {
+        let url = spawn_mock(200, "", None, None);
+        thread::sleep(Duration::from_millis(200));
+        let settings = payload_settings(Some(&url), false, "hello");
+        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_payload_swap_returns_zero() {
+        let url = spawn_mock(200, "swapped-out", Some("text/plain"), None);
+        thread::sleep(Duration::from_millis(200));
+        let settings = payload_settings(Some(&url), true, "hello");
+        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_payload_blocked_returns_one() {
+        let url = spawn_mock(503, "", None, None);
+        thread::sleep(Duration::from_millis(200));
+        let settings = payload_settings(Some(&url), false, "hello");
+        assert_eq!(super::run_payload(&settings).await.unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn content_filter_http_replace_on_swap() {
         let url = spawn_mock(200, "replaced", Some("text/plain"), None);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let client = client_for(&url, true);
         let verdict = client
             .check_http_response(HttpFilterContext {

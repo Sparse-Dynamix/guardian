@@ -36,4 +36,21 @@ mod tests {
         assert!(filter.contains("22"));
         assert!(filter.contains("8080"));
     }
+
+    #[test]
+    fn unix_filter_checks_ipv4_sa_family() {
+        if cfg!(not(windows)) {
+            let filter = connect_filter_from_ports(&[22]);
+            assert!(filter.contains("sa_family == 2"));
+        }
+    }
+
+    #[test]
+    fn windows_filter_omits_sa_family() {
+        if cfg!(windows) {
+            let filter = connect_filter_from_ports(&[22]);
+            assert!(!filter.contains("sa_family"));
+            assert!(filter.contains("![22]"));
+        }
+    }
 }
