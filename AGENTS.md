@@ -40,9 +40,9 @@ flowchart TB
     Forward --> TLS --> Filter
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only**; redirect to `bind_ip:proxy_port`; synthetic `CONNECT`. Default filter: IPv4 TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules.
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (IPv4 and IPv6); redirect to `bind_ip:proxy_port` (IPv6 destinations use an IPv4-mapped proxy address `::ffff:bind_ip`); synthetic `CONNECT`. Default filter: TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules. Client ALPN is not modified — h2/http/1.1 negotiate as the client offers.
 
-**Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. HTTP/HTTPS responses buffered and checked; server→client WS `Text`/`Binary` frames checked.
+**Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. Each leg negotiates HTTP version via ALPN (h2 or http/1.1) with no forced downgrade. Finite HTTP responses are buffered and checked once; streaming responses (`text/event-stream`, chunked, or no `Content-Length`) are gated per chunk/event (fail-closed: a chunk reaches the harness only after `--tpf` returns `200`). Server→client WS `Text`/`Binary` frames checked.
 
 ## Startup lifecycle (MITM + `--tpf`)
 
@@ -119,8 +119,9 @@ Shipped defaults: [`config/guardian.toml`](config/guardian.toml).
 
 ## Known limitations
 
-- IPv6 `connect()` not hooked
 - Certificate pinning blocks MITM
+- IPv6 `connect()` uses IPv4-mapped redirect to the proxy bind address; sockets with `IPV6_V6ONLY` to literal v6 destinations may bypass interception
 - Frida permissions required
 - Non-HTTP TCP tunneled but not filtered
 - QUIC/UDP not intercepted
+- Gated streaming adds ~one `--tpf` round-trip of latency per SSE event/chunk

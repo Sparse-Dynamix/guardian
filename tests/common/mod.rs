@@ -143,8 +143,14 @@ pub fn resolve_executable(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-fn curl_args(url: &str, ca_dir: Option<&Path>, include_headers: bool) -> Vec<String> {
+fn curl_args(
+    url: &str,
+    ca_dir: Option<&Path>,
+    include_headers: bool,
+    extra_flags: &[String],
+) -> Vec<String> {
     let mut args = vec![curl_program(), "-sS".to_string()];
+    args.extend(extra_flags.iter().cloned());
     if include_headers {
         args.push("-i".to_string());
     }
@@ -233,6 +239,7 @@ pub struct GuardianOptions {
     pub trypanophobe_filter: Option<String>,
     pub trypanophobe_swap: bool,
     pub curl_include_headers: bool,
+    pub curl_flags: Vec<String>,
 }
 
 impl Default for GuardianOptions {
@@ -244,6 +251,7 @@ impl Default for GuardianOptions {
             trypanophobe_filter: None,
             trypanophobe_swap: false,
             curl_include_headers: false,
+            curl_flags: Vec::new(),
         }
     }
 }
@@ -285,7 +293,12 @@ fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<Gua
     args.push(ca_dir.path().display().to_string());
     args.push("--".to_string());
     let ca_bundle = opts.trypanophobe_filter.is_some().then(|| ca_dir.path());
-    args.extend(curl_args(&url, ca_bundle, opts.curl_include_headers));
+    args.extend(curl_args(
+        &url,
+        ca_bundle,
+        opts.curl_include_headers,
+        &opts.curl_flags,
+    ));
     run_guardian_with_args(&args, ca_dir, &[])
 }
 
@@ -430,6 +443,144 @@ pub fn spawn_tpf_mock_with_swap_body(swap_body: &[u8]) -> TpfMockServer {
                 );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.write_all(&resp_body);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    });
+    thread::sleep(Duration::from_millis(50));
+    TpfMockServer {
+        pass_url,
+        reject_url,
+        swap_url,
+        last_request,
+        requests,
+        _thread: thread,
+    }
+}
+
+pub struct LocalHttpServer {
+    pub base_url: String,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+pub fn spawn_sse_origin(events: &[&str]) -> LocalHttpServer {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let body: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    // 127.0.0.2 is loopback but not skipped by the connect hook (unlike 127.0.0.1).
+    let listener = TcpListener::bind("127.0.0.2:0").expect("bind sse origin");
+    let port = listener.local_addr().expect("local addr").port();
+    let base_url = format!("http://127.0.0.2:{port}");
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let thread = thread::spawn(move || {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        );
+        let chunk = format!("{:x}\r\n{}\r\n", body.len(), body);
+        let end = "0\r\n\r\n";
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.write_all(chunk.as_bytes());
+                    let _ = stream.write_all(end.as_bytes());
+                    let mut drain = [0u8; 256];
+                    let _ = stream.read(&mut drain);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(50));
+    LocalHttpServer {
+        base_url,
+        _thread: thread,
+    }
+}
+
+pub fn spawn_ipv6_echo_server() -> LocalHttpServer {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    // ::ffff:127.0.0.2 is IPv6 loopback-mapped but not skipped by the hook (unlike ::1).
+    let listener = TcpListener::bind("[::ffff:127.0.0.2]:0").expect("bind ipv6 origin");
+    let port = listener.local_addr().expect("local addr").port();
+    let base_url = format!("http://[::ffff:127.0.0.2]:{port}");
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let thread = thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 11\r\nConnection: close\r\n\r\nipv6-works";
+                let _ = stream.write_all(response.as_bytes());
+                let mut drain = [0u8; 256];
+                let _ = stream.read(&mut drain);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    });
+    thread::sleep(Duration::from_millis(50));
+    LocalHttpServer {
+        base_url,
+        _thread: thread,
+    }
+}
+
+pub fn spawn_tpf_mock_reject_body_containing(needle: &str) -> TpfMockServer {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let needle = needle.to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind tpf mock");
+    let port = listener.local_addr().expect("local addr").port();
+    let base = format!("http://127.0.0.1:{port}");
+    let pass_url = format!("{base}/pass");
+    let reject_url = format!("{base}/reject");
+    let swap_url = format!("{base}/swap");
+    let last_request = Arc::new(Mutex::new(RecordedTpfRequest::default()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let last = Arc::clone(&last_request);
+    let all = Arc::clone(&requests);
+    let thread = thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0u8; 65536];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let (path_and_query, body) = parse_http_request(&buf[..n]);
+                let recorded = RecordedTpfRequest {
+                    path_and_query: path_and_query.clone(),
+                    body: body.clone(),
+                };
+                {
+                    let mut last = last.lock().unwrap();
+                    *last = recorded.clone();
+                    all.lock().unwrap().push(recorded);
+                }
+                let status = if body.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                    503
+                } else {
+                    200
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));

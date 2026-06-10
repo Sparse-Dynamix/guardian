@@ -74,15 +74,7 @@ It's a truststore (not a keystore), so the blast radius is limited, but the pass
 
 ## Product / design risks for the AI-harness use case
 
-**10. HTTP/2 and streaming are the elephant in the room.** The hook force-downgrades ALPN to `http/1.1`:
-
-```277:298:assets/connect_hook.js
-// Force http/1.1 ALPN so MITM TLS does not negotiate HTTP/2 (unsupported on this path).
-```
-
-And the filter design *buffers the full response body* before POSTing it and making an allow/block decision. But the primary AI-harness traffic — OpenAI/Anthropic/etc. — is **HTTP/2 + SSE token streaming**. Forcing HTTP/1.1 may break or degrade some providers, and buffering a streaming response defeats the purpose of streaming (the harness gets nothing until the full completion arrives, then it's filtered all-or-nothing). For the headline use case ("`guardian --tpf URL -- opencode`"), this is the make-or-break question. I'd want to see a real coding agent (Claude Code, opencode, etc.) actually working end-to-end under Guardian before calling it beta-ready. The known-limitations list mentions cert pinning and IPv6 but not streaming/H2 semantics, which are more likely to bite real users.
-
-**11. Cert pinning + IPv6 gaps will hit real agents.** Many modern clients pin or use IPv6; `AGENTS.md` honestly lists these as limitations. That's good, but for a public beta you should expect a meaningful fraction of "it just hangs / fails" reports from exactly these. Some explicit detection + a clear error ("looks like this client pins certs / used IPv6, Guardian can't intercept") would massively cut support load.
+**11. Cert pinning will hit real agents.** Many modern clients pin; `AGENTS.md` honestly lists these as limitations. That's good, but for a public beta you should expect a meaningful fraction of "it just hangs / fails" reports from exactly these. Some explicit detection + a clear error ("looks like this client pins certs, Guardian can't intercept") would massively cut support load.
 
 **12. Version inconsistency.** `Cargo.toml` is `0.1.0`, `package.json` is `1.0.0`, and the code is littered with "v1" / "pre 1.0" language. Pick one story before a public release.
 
@@ -103,7 +95,6 @@ And the filter design *buffers the full response body* before POSTing it and mak
 
 1. Fix/verify the env-var config (#1) — a documented interface that looks broken.
 2. Lock down the CA private key permissions (#6) — non-negotiable for a security tool.
-3. Prove the headline flow works against a real streaming HTTP/2 AI agent, or scope the beta to clients/providers you've actually verified (#10).
 4. Add a SECURITY.md + CI workflow and reconcile versioning (#8, #12).
 
 The correctness bugs (#3, #4, exit-code flattening) and the doc/code drift (#2) I'd want fixed but they're not necessarily release-gating if documented.

@@ -16,6 +16,10 @@ export interface TpfSmokeCase {
   curlIncludeHeaders?: boolean;
   /** MITM child curl URL override */
   smokeUrl?: string;
+  /** Extra curl flags (e.g. --http2) */
+  curlExtra?: string[];
+  /** Spawn a local origin server for this case */
+  localOrigin?: "sse" | "ipv6";
   env?: Record<string, string>;
   /** When set, child runs printenv for this variable instead of curl */
   printenvVar?: string;
@@ -105,6 +109,23 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "SWAPPED_BODY",
     curlIncludeHeaders: true,
     expectContentType: "text/markdown",
+  },
+  {
+    name: "mitm_http2",
+    mode: "mitm",
+    tpf: "pass",
+    expectExit: 0,
+    expectStdoutNonempty: true,
+    smokeUrl: process.env.SMOKE_HTTPS_URL ?? "https://httpbingo.org/get",
+    curlExtra: ["--http2"],
+  },
+  {
+    name: "mitm_sse_streaming",
+    mode: "mitm",
+    tpf: "pass",
+    expectExit: 0,
+    expectStdoutContains: "smoke-sse-alpha",
+    localOrigin: "sse",
   },
   {
     name: "mitm_image_swap",

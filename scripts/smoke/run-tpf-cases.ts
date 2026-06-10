@@ -14,6 +14,7 @@ import {
   assertStdoutNonempty,
 } from "./assert.ts";
 import type { TpfMockServer } from "./tpf-mock-server.ts";
+import { startLocalOrigin } from "./local-origin.ts";
 import { assertGuardianBuilt, platformConfig } from "./platform.ts";
 import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
@@ -57,8 +58,9 @@ function curlArgs(
   caDir: string,
   includeHeaders: boolean,
   failOnHttpError: boolean,
+  extra: string[] = [],
 ): string[] {
-  const args = [config.curl, failOnHttpError ? "-sSf" : "-sS"];
+  const args = [config.curl, failOnHttpError ? "-sSf" : "-sS", ...extra];
   if (includeHeaders) {
     args.push("-i");
   }
@@ -96,6 +98,7 @@ function childArgs(
     caDir,
     c.curlIncludeHeaders ?? false,
     failOnHttpError,
+    c.curlExtra ?? [],
   );
 
   if (hostPlatform() === "win") {
@@ -235,6 +238,15 @@ export async function runTpfSmokeCases(server: TpfMockServer): Promise<void> {
   assertGuardianBuilt(config);
 
   for (const c of tpfSmokeCases) {
+    if (c.localOrigin) {
+      const origin = await startLocalOrigin(c.localOrigin);
+      try {
+        await runCase(c, server, origin.baseUrl);
+      } finally {
+        await origin.close();
+      }
+      continue;
+    }
     const url = smokeUrl(c.smokeUrl);
     await runCase(c, server, url);
   }

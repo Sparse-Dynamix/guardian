@@ -1,10 +1,14 @@
 // Adapted from fritm (https://github.com/louisabraham/fritm) and HTTP Toolkit native-connect-hook.
 // Templates: PORT, FILTER (JS expression), BIND_HOST, BIND_HOST_0..3 (IPv4 octets).
-// IPv6 destinations are not hooked in v1.
+// IPv6 destinations redirect to the IPv4-mapped proxy (::ffff:BIND_HOST); ALPN is not modified.
 
 var PORT = {{PORT}};
 var BIND_HOST = "{{BIND_HOST}}";
 var __guardianHostByIp = {};
+
+var IPv6_MAPPING_PREFIX = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
+var PROXY_HOST_IPv4_BYTES = [{{BIND_HOST_0}}, {{BIND_HOST_1}}, {{BIND_HOST_2}}, {{BIND_HOST_3}}];
+var PROXY_HOST_IPv6_BYTES = IPv6_MAPPING_PREFIX.concat(PROXY_HOST_IPv4_BYTES);
 
 function globalExport(name) {
     if (typeof Module.getGlobalExportByName === 'function') {
@@ -20,17 +24,29 @@ function filter(sa_family, addr, port, host) {
     return {{FILTER}};
 }
 
-function connectTarget(ip) {
-    if (__guardianHostByIp[ip]) {
-        return __guardianHostByIp[ip];
+function connectTarget(addrKey) {
+    if (__guardianHostByIp[addrKey]) {
+        return __guardianHostByIp[addrKey];
     }
-    return ip;
+    return addrKey;
 }
 
 function rememberHostIp(host, ip) {
     if (host && ip) {
         __guardianHostByIp[ip] = host;
     }
+}
+
+function areBytesEqual(a, b) {
+    if (a.length !== b.length) {
+        return false;
+    }
+    for (var i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function ipv4FromSockaddr(addrPtr) {
@@ -44,9 +60,65 @@ function ipv4FromSockaddr(addrPtr) {
     return ip;
 }
 
-function isStreamSocket(sockfd) {
-    var sockType = Socket.type(sockfd);
-    return sockType === 'tcp' || sockType === 'tcp6';
+function ipv6BytesFromSockaddr(addrPtr) {
+    var bytes = [];
+    for (var i = 0; i < 16; i++) {
+        bytes.push(addrPtr.add(8 + i).readU8());
+    }
+    return bytes;
+}
+
+function isIpv4Mapped(bytes) {
+    for (var i = 0; i < 10; i++) {
+        if (bytes[i] !== 0) {
+            return false;
+        }
+    }
+    return bytes[10] === 0xff && bytes[11] === 0xff;
+}
+
+function ipv6KeyFromBytes(bytes) {
+    if (isIpv4Mapped(bytes)) {
+        return bytes[12] + '.' + bytes[13] + '.' + bytes[14] + '.' + bytes[15];
+    }
+    var parts = [];
+    for (var i = 0; i < 16; i += 2) {
+        parts.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+    }
+    return '[' + parts.join(':') + ']';
+}
+
+function isIpv6Loopback(bytes) {
+    for (var i = 0; i < 15; i++) {
+        if (bytes[i] !== 0) {
+            return false;
+        }
+    }
+    return bytes[15] === 1;
+}
+
+function isIpv6Unspecified(bytes) {
+    for (var i = 0; i < 16; i++) {
+        if (bytes[i] !== 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function isIpv4MappedLoopback(bytes) {
+    return isIpv4Mapped(bytes)
+        && bytes[12] === 127
+        && bytes[13] === 0
+        && bytes[14] === 0
+        && bytes[15] === 1;
+}
+
+function formatConnectAuthority(target, port) {
+    if (target.charAt(0) === '[') {
+        return target + ':' + port;
+    }
+    return target + ':' + port;
 }
 
 function mapAddrinfoResults(host, resPtr) {
@@ -58,10 +130,13 @@ function mapAddrinfoResults(host, resPtr) {
     var aiNextOff = Process.pointerSize === 8 ? 48 : 28;
     var cur = resPtr;
     while (!cur.isNull()) {
-        if (cur.add(aiFamilyOff).readS32() === 2) {
-            var addr = cur.add(aiAddrOff).readPointer();
-            if (!addr.isNull()) {
+        var family = cur.add(aiFamilyOff).readS32();
+        var addr = cur.add(aiAddrOff).readPointer();
+        if (!addr.isNull()) {
+            if (family === 2) {
                 rememberHostIp(host, ipv4FromSockaddr(addr));
+            } else if (family === 10 || family === 23) {
+                rememberHostIp(host, ipv6KeyFromBytes(ipv6BytesFromSockaddr(addr)));
             }
         }
         cur = cur.add(aiNextOff).readPointer();
@@ -170,40 +245,61 @@ function hookConnect(connect_p, send_p, recv_p) {
         onEnter: function (args) {
             this.sockfd = args[0];
             var sockfd = this.sockfd.toInt32();
-            if (!isStreamSocket(sockfd)) {
+            var sockType = Socket.type(sockfd);
+            var isTCP4 = sockType === 'tcp';
+            var isTCP6 = sockType === 'tcp6';
+            if (!isTCP4 && !isTCP6) {
                 this.hook = false;
                 return;
             }
 
             var sockaddr_p = args[1];
-            this.sa_family = sockaddr_p.add(1).readU8();
             this.port = 256 * sockaddr_p.add(2).readU8() + sockaddr_p.add(3).readU8();
-            this.addr = ipv4FromSockaddr(sockaddr_p);
+            this.isIPv6 = isTCP6;
 
-            if (this.sa_family != 2 && this.sa_family != 0) {
-                this.hook = false;
-                return;
+            if (isTCP4) {
+                this.sa_family = 2;
+                this.addrKey = ipv4FromSockaddr(sockaddr_p);
+                this.addrBytes = null;
+
+                if (this.addrKey === '127.0.0.1' || this.addrKey === '0.0.0.0') {
+                    this.hook = false;
+                    return;
+                }
+                if (this.addrKey === BIND_HOST && this.port === PORT) {
+                    this.hook = false;
+                    return;
+                }
+            } else {
+                this.sa_family = 10;
+                this.addrBytes = ipv6BytesFromSockaddr(sockaddr_p);
+                this.addrKey = ipv6KeyFromBytes(this.addrBytes);
+
+                if (isIpv6Loopback(this.addrBytes)
+                    || isIpv6Unspecified(this.addrBytes)
+                    || isIpv4MappedLoopback(this.addrBytes)) {
+                    this.hook = false;
+                    return;
+                }
+                if (this.port === PORT && areBytesEqual(this.addrBytes, PROXY_HOST_IPv6_BYTES)) {
+                    this.hook = false;
+                    return;
+                }
             }
 
-            if (this.addr === '127.0.0.1' || this.addr === '0.0.0.0') {
-                this.hook = false;
-                return;
-            }
-
-            if (this.addr === BIND_HOST && this.port === PORT) {
-                this.hook = false;
-                return;
-            }
-
-            var host = __guardianHostByIp[this.addr] || null;
-            this.hook = filter(this.sa_family, this.addr, this.port, host);
+            var host = __guardianHostByIp[this.addrKey] || null;
+            this.hook = filter(this.sa_family, this.addrKey, this.port, host);
             if (!this.hook) {
                 return;
             }
 
             var newport = PORT;
             sockaddr_p.add(2).writeByteArray([Math.floor(newport / 256), newport % 256]);
-            sockaddr_p.add(4).writeByteArray([{{BIND_HOST_0}}, {{BIND_HOST_1}}, {{BIND_HOST_2}}, {{BIND_HOST_3}}]);
+            if (isTCP4) {
+                sockaddr_p.add(4).writeByteArray(PROXY_HOST_IPv4_BYTES);
+            } else {
+                sockaddr_p.add(8).writeByteArray(PROXY_HOST_IPv6_BYTES);
+            }
         },
         onLeave: function (retval) {
             if (!this.hook) {
@@ -212,9 +308,10 @@ function hookConnect(connect_p, send_p, recv_p) {
             var sockfd = this.sockfd.toInt32();
             ensureBlockingSocket(sockfd);
 
-            var target = connectTarget(this.addr);
-            var connect_request = "CONNECT " + target + ":" + this.port + " HTTP/1.1\r\n"
-                + "Host: " + target + ":" + this.port + "\r\n"
+            var target = connectTarget(this.addrKey);
+            var authority = formatConnectAuthority(target, this.port);
+            var connect_request = "CONNECT " + authority + " HTTP/1.1\r\n"
+                + "Host: " + authority + "\r\n"
                 + "Proxy-Connection: Keep-Alive\r\n"
                 + "\r\n";
             var buf_send = Memory.allocUtf8String(connect_request);
@@ -273,26 +370,3 @@ if (Process.platform === 'windows') {
     hookRecvCarry(recv_p);
     hookRecvCarry(read_p);
 }
-
-// Force http/1.1 ALPN so MITM TLS does not negotiate HTTP/2 (unsupported on this path).
-(function hookClientAlpn() {
-    var http1 = Memory.alloc(9);
-    http1.writeByteArray([8, 0x68, 0x74, 0x74, 0x70, 0x2f, 0x31, 0x2e, 0x31]);
-    var callbacks = [];
-
-    function replaceAlpn(name) {
-        var fn = globalExport(name);
-        if (!fn) {
-            return;
-        }
-        var orig = new NativeFunction(fn, 'int', ['pointer', 'pointer', 'uint']);
-        var cb = new NativeCallback(function (ctx, _protos, _len) {
-            return orig(ctx, http1, 9);
-        }, 'int', ['pointer', 'pointer', 'uint']);
-        callbacks.push(cb);
-        Interceptor.replace(fn, cb);
-    }
-
-    replaceAlpn('SSL_CTX_set_alpn_protos');
-    replaceAlpn('SSL_set_alpn_protos');
-})();
