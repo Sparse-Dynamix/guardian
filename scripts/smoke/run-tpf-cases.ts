@@ -18,6 +18,7 @@ import { assertGuardianBuilt, platformConfig } from "./platform.ts";
 import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
 import { resolveExecutable } from "../lib/resolve-exec.ts";
+import { SMOKE_CASE_TIMEOUT_MS, withSmokeTimeout } from "./timeout.ts";
 
 if (process.platform === "win32") {
   usePowerShell();
@@ -39,6 +40,18 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
       return { url: `${servers.sse.baseUrl}/` };
     case "localImage":
       return { url: servers.http.imagePngUrl };
+    case "remoteHttp":
+      return {
+        url: process.env.SMOKE_URL ?? "http://httpbingo.org/get",
+      };
+    case "remoteImage":
+      return {
+        url: process.env.SMOKE_IMAGE_URL ?? "https://httpbingo.org/image/png",
+      };
+    case "remoteSse":
+      return {
+        url: process.env.SMOKE_SSE_URL ?? "https://httpbingo.org/sse",
+      };
     case "remoteHttp2":
       return {
         url: process.env.SMOKE_HTTPS_URL ?? "https://httpbingo.org/get",
@@ -87,7 +100,15 @@ function curlArgs(
   extra: string[] = [],
   tpfActive = false,
 ): string[] {
-  const args = [config.curl, failOnHttpError ? "-sSf" : "-sS", ...extra];
+  const args = [
+    config.curl,
+    failOnHttpError ? "-sSf" : "-sS",
+    "--connect-timeout",
+    "5",
+    "--max-time",
+    "20",
+    ...extra,
+  ];
   if (includeHeaders) {
     args.push("-i");
   }
@@ -158,6 +179,7 @@ async function runGuardianProcess(
     cwd: REPO_ROOT,
     quiet: true,
     nothrow: true,
+    timeout: SMOKE_CASE_TIMEOUT_MS,
     env: { ...process.env, ...env },
     ...(stdin !== undefined
       ? { input: stdin }
@@ -218,10 +240,12 @@ async function runCase(c: TpfSmokeCase, servers: TestServers): Promise<void> {
   const { url, env } = resolveCaseTarget(c, servers);
   let lastError: unknown;
   for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
-    const result =
+    const result = await withSmokeTimeout(
+      `tpf smoke case ${c.name}`,
       c.mode === "payload"
-        ? await runPayloadCase(c, servers)
-        : await runMitmCase(c, servers, url, env);
+        ? runPayloadCase(c, servers)
+        : runMitmCase(c, servers, url, env),
+    );
 
     try {
       assertExit(c.expectExit, result.exitCode);

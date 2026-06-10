@@ -1,16 +1,21 @@
 mod common;
 
 use common::{
-    assert_child_success, fetch_tpf_requests, run_guardian_with_options_until, spawn_test_servers,
-    GuardianOptions, TestServersConfig,
+    assert_child_success, fetch_tpf_requests, require_network, run_guardian_with_options_until,
+    spawn_test_servers, GuardianOptions, TestServersConfig,
 };
 
 #[test]
 fn mitm_tpf_posts_url_query() {
+    if !require_network() {
+        eprintln!("skipping: network unreachable or GUARDIAN_SKIP_NETWORK set");
+        return;
+    }
     let servers = spawn_test_servers(TestServersConfig::default());
     let opts = GuardianOptions {
-        url: Some(servers.http_get_url.clone()),
+        url: Some(common::smoke_url()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
+        curl_flags: vec!["--noproxy".to_string(), "*".to_string()],
         ..GuardianOptions::default()
     };
     let run = run_guardian_with_options_until(opts, |run| {

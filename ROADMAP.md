@@ -16,30 +16,6 @@ That said: **I would not ship a public beta yet.** There are a few correctness b
 
 In the `config` crate, `separator("_")` means underscores denote *nesting*. So `GUARDIAN_TRYPANOPHOBE_FILTER` becomes the nested key `trypanophobe.filter`, which silently doesn't match the flat field `trypanophobe_filter`. Worse, `GUARDIAN_FILTER_TIMEOUT_SECS` becomes `filter.timeout.secs`, turning `filter` (an `Option<String>`)... it's a mess. The `AGENTS.md` / README advertise `GUARDIAN_TRYPANOPHOBE_FILTER`, `GUARDIAN_BIND`, `GUARDIAN_PORT`, `GUARDIAN_CA_DIR`, etc. I'd verify these actually work — I suspect most multi-word ones don't. There's no test covering env-var config loading (the `GUARDIAN_*` greps in tests are all test-harness vars, not config keys). This is a documented public interface that appears non-functional.
 
-**2. Synthetic CONNECT mismatch with what the proxy expects.**
-
-`AGENTS.md` says Layer 1 sends `CONNECT host:port HTTP/1.0`, but the hook actually sends HTTP/1.1 with `Proxy-Connection: Keep-Alive`:
-
-```216:219:assets/connect_hook.js
-            var connect_request = "CONNECT " + target + ":" + this.port + " HTTP/1.1\r\n"
-                + "Host: " + target + ":" + this.port + "\r\n"
-                + "Proxy-Connection: Keep-Alive\r\n"
-                + "\r\n";
-```
-
-Not necessarily a bug, but the doc and code disagree, and `Keep-Alive` semantics interact with the patch's `Connection: close` behavior — worth confirming the actual handshake on the wire matches intent.
-
-**3. CONNECT reply parsing is bounded to 4096 bytes / 200 attempts and ignores status.**
-
-```223:247:assets/connect_hook.js
-            var buf_recv = Memory.alloc(4096);
-            var total = 0;
-            var attempts = 0;
-            while (total < 4096 && attempts < 200) {
-```
-
-The hook reads the proxy's CONNECT response but never checks for a `200` status — if the proxy returns `4xx/5xx`, the client proceeds to TLS-handshake into an error body. And the fixed 4096 buffer assumes the proxy never sends a large CONNECT response, which is fine for your own proxy but brittle. The `Thread.sleep(0.05)` polling inside a `connect()` interceptor also adds latency to every hooked connection.
-
 **4. `try_wait_pid` treats "process gone" as exit code 0.**
 
 ```320:322:src/injector.rs
@@ -48,8 +24,6 @@ The hook reads the proxy's CONNECT response but never checks for a `200` status 
 ```
 
 Because Frida spawns the child (not a direct fork), you can't `waitpid` it, so you poll with `kill(pid,0)`. When the process disappears you report exit code `0` regardless of how it actually exited. For a passthrough/wrapper tool, propagating the real child exit code matters (CI, scripts, `&&` chains). The non-filtered path gets this right via `status.code()`; the filtered path can't and silently flattens to 0. Worth documenting at minimum.
-
-**5. PID reuse race in the poll loop.** `wait_for_root` polls `kill(pid,0)` on a 50ms interval. Between the child exiting and the next poll, the OS can recycle that PID. Low probability, but it exists by construction with PID-polling. Worth a note.
 
 ---
 
@@ -85,7 +59,6 @@ It's a truststore (not a keystore), so the blast radius is limited, but the pass
 - `proxy.rs` has both `start_proxy` and `start_proxy_and_wait`; fine, but `wait_for_listener` connecting via `TcpStream::connect` actually opens a real connection to the proxy on every poll, which the proxy then has to handle/drop. Minor.
 - After shutdown there's a hardcoded `sleep(500ms)` in `main.rs` before cancelling the proxy — a smell that there's a races being papered over.
 - No `--version`-surfaced build metadata (git SHA), which you'll want for beta bug reports.
-- `connect_hook.js` skips `127.0.0.1` and `0.0.0.0` but not other loopback/private ranges; depending on intent that may be fine, but document it.
 
 ---
 
@@ -96,5 +69,3 @@ It's a truststore (not a keystore), so the blast radius is limited, but the pass
 1. Fix/verify the env-var config (#1) — a documented interface that looks broken.
 2. Lock down the CA private key permissions (#6) — non-negotiable for a security tool.
 4. Add a SECURITY.md + CI workflow and reconcile versioning (#8, #12).
-
-The correctness bugs (#3, #4, exit-code flattening) and the doc/code drift (#2) I'd want fixed but they're not necessarily release-gating if documented.

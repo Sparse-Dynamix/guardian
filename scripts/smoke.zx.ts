@@ -13,6 +13,9 @@ const buildScript = path.join(
 
 await runZxScript(buildScript);
 
+await $`node --test scripts/connect-bypass.test.ts`;
+await $`node --test scripts/connect-handshake.test.ts`;
+
 const servers = await startTestServers();
 try {
   await runSmokeCases(servers);

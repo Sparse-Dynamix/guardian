@@ -3,7 +3,9 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -274,7 +276,7 @@ where
     run_guardian_http_with_retry(|| run_guardian_with_options_once(&opts), is_complete)
 }
 
-fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
+pub fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
     let url = opts.url.clone().unwrap_or_else(smoke_url);
     let mut args = Vec::new();
     if let Some(port) = opts.port {
@@ -684,20 +686,47 @@ fn run_guardian_with_args(
     child.stdout(Stdio::piped());
     child.stderr(Stdio::piped());
 
+    let mitm = args.windows(2).any(|w| w[0] == "--tpf");
+    let deadline = Instant::now()
+        + if mitm {
+            GUARDIAN_RUN_DEADLINE
+        } else {
+            Duration::from_secs(60)
+        };
+
     let mut process = child.spawn()?;
 
-    let mut stdout_bytes = Vec::new();
-    let mut stderr = String::new();
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
     if let Some(mut out) = process.stdout.take() {
-        out.read_to_end(&mut stdout_bytes)?;
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = out.read_to_end(&mut bytes);
+            let _ = stdout_tx.send(bytes);
+        });
+    } else {
+        let _ = stdout_tx.send(Vec::new());
     }
     if let Some(mut err) = process.stderr.take() {
-        err.read_to_string(&mut stderr)?;
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = err.read_to_string(&mut text);
+            let _ = stderr_tx.send(text);
+        });
+    } else {
+        let _ = stderr_tx.send(String::new());
     }
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
 
-    let status = process.wait()?;
+    let status = wait_for_child(&mut process, deadline)?;
     let exit_code = status.code().unwrap_or(-1);
+
+    let stdout_bytes = stdout_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default();
+    let stderr = stderr_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
 
     Ok(GuardianRun {
         exit_code,
@@ -708,6 +737,29 @@ fn run_guardian_with_args(
 }
 
 const GUARDIAN_HTTP_RETRIES: usize = 5;
+
+/// Hard cap for a single guardian invocation (MITM uses Frida + proxy; must not hang the suite).
+pub const GUARDIAN_RUN_DEADLINE: Duration = Duration::from_secs(30);
+
+fn wait_for_child(
+    process: &mut Child,
+    deadline: Instant,
+) -> std::io::Result<std::process::ExitStatus> {
+    loop {
+        if let Some(status) = process.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("guardian did not exit within {:?}", deadline.elapsed()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 
 fn run_guardian_http_with_retry<F, P>(
     mut run_once: F,

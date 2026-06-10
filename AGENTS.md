@@ -27,7 +27,7 @@ flowchart TB
     subgraph layer1 [Layer 1 - Frida TCP hook]
         Connect[connect host:port]
         Redirect[Redirect to bind_ip:proxy_port]
-        SyntheticCONNECT["Send CONNECT host:port HTTP/1.1"]
+        SyntheticCONNECT["CONNECT authority HTTP/1.1 + validate 2xx"]
     end
     subgraph layer2 [Layer 2 - Proxelar forward MITM]
         Forward[Accept CONNECT tunnel]
@@ -40,7 +40,7 @@ flowchart TB
     Forward --> TLS --> Filter
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (IPv4 and IPv6); redirect to `bind_ip:proxy_port` (IPv6 destinations use an IPv4-mapped proxy address `::ffff:bind_ip`); synthetic `CONNECT host:port HTTP/1.1` with `Proxy-Connection: Keep-Alive`. Default filter: TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules. Client ALPN is not modified — h2/http/1.1 negotiate as the client offers.
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (IPv4 and IPv6); redirect to `bind_ip:proxy_port` (IPv6 destinations use an IPv4-mapped proxy address `::ffff:bind_ip`); synthetic `CONNECT authority HTTP/1.1` with `Host` only; read and require a `2xx` CONNECT response (fail-closed on error/timeout). Loopback and unspecified destinations bypass the hook in JS (`127/8`, `0.0.0.0`, `::1`, `::`, and IPv4-mapped forms only — not private ranges). Default filter: TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules. Client ALPN is not modified — h2/http/1.1 negotiate as the client offers. Process shutdown uses `kill_tree` on the Frida-spawned tree; root exit is detected via Frida `child-removed`, not `kill(pid,0)` or session detach alone.
 
 **Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. Each leg negotiates HTTP version via ALPN (h2 or http/1.1) with no forced downgrade. Finite HTTP responses (including chunked and bodies without `Content-Length`) are buffered and checked once. Only `text/event-stream` (SSE) is gated per event (fail-closed: an event reaches the harness only after `--tpf` returns `200`). Server→client WS `Text`/`Binary` frames checked.
 

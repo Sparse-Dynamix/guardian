@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use frida::{DeviceManager, DeviceType, Frida, ScriptOption, SpawnOptions, SpawnStdio};
+use kill_tree::blocking::kill_tree_with_config;
+use kill_tree::Config;
 use serde_json::json;
 
 use crate::ca::CaTrust;
@@ -17,6 +19,8 @@ use crate::frida_ext::{
 use crate::port::resolve_listen_port;
 
 const CONNECT_HOOK_TEMPLATE: &str = include_str!("../assets/connect_hook.js");
+const CONNECT_BYPASS_LIB: &str = include_str!("../assets/connect_bypass_lib.js");
+const CONNECT_HANDSHAKE_LIB: &str = include_str!("../assets/connect_handshake_lib.js");
 const ENV_INJECT_TEMPLATE: &str = include_str!("../assets/env_inject.js");
 
 #[derive(Clone)]
@@ -51,7 +55,9 @@ pub fn build_hook_bundle(
         .replace("{{BIND_HOST_0}}", &octets[0].to_string())
         .replace("{{BIND_HOST_1}}", &octets[1].to_string())
         .replace("{{BIND_HOST_2}}", &octets[2].to_string())
-        .replace("{{BIND_HOST_3}}", &octets[3].to_string());
+        .replace("{{BIND_HOST_3}}", &octets[3].to_string())
+        .replace("{{CONNECT_BYPASS_LIB}}", CONNECT_BYPASS_LIB)
+        .replace("{{CONNECT_HANDSHAKE_LIB}}", CONNECT_HANDSHAKE_LIB);
 
     let ca_env = json!(ca_trust.env_pairs_for_injection());
     let env_inject = ENV_INJECT_TEMPLATE.replace("{{CA_ENV_JSON}}", &ca_env.to_string());
@@ -68,16 +74,20 @@ fn instrument<'a>(
     pid: u32,
     hook_bundle: &HookBundle,
     event_tx: &Sender<ProcessEvent>,
+    root_pid: u32,
 ) -> Result<()> {
     let session = device
         .attach(pid)
         .with_context(|| format!("failed to attach to pid {pid}"))?;
     enable_child_gating(&session)?;
 
-    let tx = event_tx.clone();
+    let tx_replace = event_tx.clone();
+    let tx_detach = event_tx.clone();
     let detached = connect_session_detached(&session, move |reason| {
         if is_process_replaced(reason) {
-            let _ = tx.send(ProcessEvent::ProcessReplaced(pid));
+            let _ = tx_replace.send(ProcessEvent::ProcessReplaced(pid));
+        } else if pid == root_pid {
+            let _ = tx_detach.send(ProcessEvent::ChildRemoved(pid));
         }
     });
 
@@ -179,15 +189,22 @@ pub fn run_injection_coordinated(
         .map_err(|_| anyhow::anyhow!("proxy coordinator dropped before port allocation"))?;
 
     if recv_or_interrupted(&proxy_ready_rx, &interrupt_rx, 100)?.is_none() {
-        terminate_pid(root_pid);
+        terminate_process_tree(root_pid);
         return Ok(SpawnOutcome { exit_code: 130 });
     }
 
     let hook_bundle = build_hook_bundle(port, &settings.filter, settings.bind, ca_trust)?;
     let mut sessions: HashMap<u32, TrackedSession<'_>> = HashMap::new();
 
-    instrument(&device, &mut sessions, root_pid, &hook_bundle, &event_tx)
-        .context("failed to instrument root process")?;
+    instrument(
+        &device,
+        &mut sessions,
+        root_pid,
+        &hook_bundle,
+        &event_tx,
+        root_pid,
+    )
+    .context("failed to instrument root process")?;
 
     let exit_code = wait_for_root(
         root_pid,
@@ -222,36 +239,42 @@ fn recv_or_interrupted<T>(
     }
 }
 
-fn terminate_pid(pid: u32) {
+pub(crate) fn terminate_process_tree(pid: u32) {
     #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as i32, libc::SIGINT);
-        std::thread::sleep(Duration::from_millis(100));
-        if libc::kill(pid as i32, 0) != 0 {
-            return;
+    {
+        for signal in ["SIGINT", "SIGTERM", "SIGKILL"] {
+            let config = Config {
+                signal: signal.to_string(),
+                ..Default::default()
+            };
+            let _ = kill_tree_with_config(pid, &config);
+            std::thread::sleep(Duration::from_millis(100));
+            if matches!(probe_pid(pid), PidProbe::Gone) {
+                return;
+            }
         }
-        libc::kill(pid as i32, libc::SIGTERM);
-        std::thread::sleep(Duration::from_millis(100));
-        if libc::kill(pid as i32, 0) != 0 {
-            return;
-        }
-        libc::kill(pid as i32, libc::SIGKILL);
     }
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-        };
+        let config = Config::default();
+        let _ = kill_tree_with_config(pid, &config);
+    }
+}
 
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-        if !handle.is_null() {
-            unsafe {
-                TerminateProcess(handle, 1);
-                CloseHandle(handle);
-            }
-        }
+enum PidProbe {
+    Running,
+    Gone,
+}
+
+fn is_authoritative_root_exit(event: &ProcessEvent, root_pid: u32) -> bool {
+    matches!(event, ProcessEvent::ChildRemoved(pid) if *pid == root_pid)
+}
+
+fn probe_pid(pid: u32) -> PidProbe {
+    match try_wait_pid(pid) {
+        WaitStatus::StillRunning => PidProbe::Running,
+        WaitStatus::Exited(_) | WaitStatus::Error(_) => PidProbe::Gone,
     }
 }
 
@@ -267,38 +290,35 @@ fn wait_for_root<'a>(
 ) -> Result<i32> {
     loop {
         while let Ok(event) = event_rx.try_recv() {
+            if is_authoritative_root_exit(&event, root_pid) {
+                sessions.remove(&root_pid);
+                return Ok(0);
+            }
             match event {
                 ProcessEvent::ChildRemoved(pid) => {
                     sessions.remove(&pid);
                 }
                 ProcessEvent::ProcessReplaced(pid) => {
                     sessions.remove(&pid);
-                    instrument(device, sessions, pid, hook_bundle, event_tx).with_context(
-                        || format!("failed to re-instrument pid {pid} after process replacement"),
-                    )?;
+                    instrument(device, sessions, pid, hook_bundle, event_tx, root_pid)
+                        .with_context(|| {
+                            format!("failed to re-instrument pid {pid} after process replacement")
+                        })?;
                 }
                 ProcessEvent::ChildAdded(pid) => {
-                    instrument(device, sessions, pid, hook_bundle, event_tx)
+                    instrument(device, sessions, pid, hook_bundle, event_tx, root_pid)
                         .with_context(|| format!("failed to instrument child {pid}"))?;
                 }
             }
         }
 
-        match try_wait_pid(root_pid) {
-            WaitStatus::Exited(code) => return Ok(code),
-            WaitStatus::StillRunning => {
-                match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms)) {
-                    Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                        terminate_pid(root_pid);
-                        sessions.clear();
-                        return Ok(130);
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                }
+        match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                terminate_process_tree(root_pid);
+                sessions.clear();
+                return Ok(130);
             }
-            WaitStatus::Error(e) => {
-                anyhow::bail!("wait failed for {root_pid}: {e}");
-            }
+            Err(RecvTimeoutError::Timeout) => {}
         }
     }
 }
@@ -363,7 +383,10 @@ mod tests {
     use crate::ca::CaTrust;
     use crate::config::Settings;
 
-    use super::{build_hook_bundle, recv_or_interrupted, terminate_pid, try_wait_pid, WaitStatus};
+    use super::{
+        build_hook_bundle, is_authoritative_root_exit, probe_pid, recv_or_interrupted,
+        terminate_process_tree, try_wait_pid, PidProbe, ProcessEvent, WaitStatus,
+    };
 
     fn test_settings() -> Settings {
         Settings {
@@ -401,6 +424,37 @@ mod tests {
         assert!(bundle
             .connect_hook
             .contains("filter(this.sa_family, this.addrKey, this.port, host)"));
+    }
+
+    #[test]
+    fn hook_bundle_has_no_loopback_bypass_switch() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let bundle = build_hook_bundle(9999, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(!bundle.connect_hook.contains("BYPASS_LOOPBACK"));
+    }
+
+    #[test]
+    fn hook_bundle_includes_js_bypass_helpers() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let bundle = build_hook_bundle(9999, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains("shouldBypassAddress"));
+        assert!(bundle.connect_hook.contains("isIpv4LoopbackOrUnspecified"));
+        assert!(!bundle.connect_hook.contains(concat!("new Rust", "Module")));
+        assert!(!bundle.connect_hook.contains("Proxy-Connection"));
+    }
+
+    #[test]
+    fn hook_bundle_uses_minimal_connect_request() {
+        let ca = CaTrust::from_settings(&test_settings());
+        let bundle = build_hook_bundle(9999, "true", Ipv4Addr::LOCALHOST, &ca).unwrap();
+        assert!(bundle.connect_hook.contains("CONNECT "));
+        assert!(bundle.connect_hook.contains("Host: "));
+        assert!(bundle.connect_hook.contains("storeCarry"));
+        assert!(bundle.connect_hook.contains("retval.toInt32() !== 0"));
+        assert!(bundle.connect_hook.contains("isConnectPendingError"));
+        assert!(bundle
+            .connect_hook
+            .contains("restoreSocketFlags(sockfd, originalFlags);"));
     }
 
     #[test]
@@ -466,8 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn probe_pid_detects_running_self() {
+        let pid = std::process::id();
+        assert!(matches!(probe_pid(pid), PidProbe::Running));
+    }
+
+    #[test]
+    fn child_removed_is_authoritative_root_exit() {
+        assert!(is_authoritative_root_exit(
+            &ProcessEvent::ChildRemoved(42),
+            42
+        ));
+        assert!(!is_authoritative_root_exit(
+            &ProcessEvent::ProcessReplaced(42),
+            42
+        ));
+        assert!(!is_authoritative_root_exit(
+            &ProcessEvent::ChildRemoved(7),
+            42
+        ));
+    }
+
+    #[test]
     #[cfg(unix)]
-    fn terminate_pid_escalates_past_sigint() {
+    fn terminate_process_tree_escalates_past_sigint() {
         use std::process::{Command, Stdio};
 
         let mut child = Command::new("bash")
@@ -478,7 +554,7 @@ mod tests {
             .spawn()
             .expect("spawn bash sleeper");
         let pid = child.id();
-        terminate_pid(pid);
+        terminate_process_tree(pid);
         let status = child.wait().expect("wait child");
         assert!(!status.success());
     }

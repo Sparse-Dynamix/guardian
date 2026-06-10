@@ -1,6 +1,5 @@
 // Adapted from fritm (https://github.com/louisabraham/fritm) and HTTP Toolkit native-connect-hook.
-// Templates: PORT, FILTER (JS expression), BIND_HOST, BIND_HOST_0..3 (IPv4 octets).
-// IPv6 destinations redirect to the IPv4-mapped proxy (::ffff:BIND_HOST); ALPN is not modified.
+// Templates: PORT, FILTER, BIND_HOST, BIND_HOST_0..3, CONNECT_BYPASS_LIB, CONNECT_HANDSHAKE_LIB.
 
 var PORT = {{PORT}};
 var BIND_HOST = "{{BIND_HOST}}";
@@ -9,6 +8,9 @@ var __guardianHostByIp = {};
 var IPv6_MAPPING_PREFIX = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
 var PROXY_HOST_IPv4_BYTES = [{{BIND_HOST_0}}, {{BIND_HOST_1}}, {{BIND_HOST_2}}, {{BIND_HOST_3}}];
 var PROXY_HOST_IPv6_BYTES = IPv6_MAPPING_PREFIX.concat(PROXY_HOST_IPv4_BYTES);
+
+{{CONNECT_BYPASS_LIB}}
+{{CONNECT_HANDSHAKE_LIB}}
 
 function globalExport(name) {
     if (typeof Module.getGlobalExportByName === 'function') {
@@ -49,15 +51,27 @@ function areBytesEqual(a, b) {
     return true;
 }
 
-function ipv4FromSockaddr(addrPtr) {
+function ipv4BytesFromSockaddr(addrPtr) {
+    var bytes = [];
+    for (var i = 0; i < 4; i++) {
+        bytes.push(addrPtr.add(4 + i).readU8());
+    }
+    return bytes;
+}
+
+function ipv4StringFromBytes(bytes) {
     var ip = "";
     for (var i = 0; i < 4; i++) {
-        ip += addrPtr.add(4 + i).readU8();
+        ip += bytes[i];
         if (i < 3) {
             ip += '.';
         }
     }
     return ip;
+}
+
+function ipv4FromSockaddr(addrPtr) {
+    return ipv4StringFromBytes(ipv4BytesFromSockaddr(addrPtr));
 }
 
 function ipv6BytesFromSockaddr(addrPtr) {
@@ -66,15 +80,6 @@ function ipv6BytesFromSockaddr(addrPtr) {
         bytes.push(addrPtr.add(8 + i).readU8());
     }
     return bytes;
-}
-
-function isIpv4Mapped(bytes) {
-    for (var i = 0; i < 10; i++) {
-        if (bytes[i] !== 0) {
-            return false;
-        }
-    }
-    return bytes[10] === 0xff && bytes[11] === 0xff;
 }
 
 function ipv6KeyFromBytes(bytes) {
@@ -86,32 +91,6 @@ function ipv6KeyFromBytes(bytes) {
         parts.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
     }
     return '[' + parts.join(':') + ']';
-}
-
-function isIpv6Loopback(bytes) {
-    for (var i = 0; i < 15; i++) {
-        if (bytes[i] !== 0) {
-            return false;
-        }
-    }
-    return bytes[15] === 1;
-}
-
-function isIpv6Unspecified(bytes) {
-    for (var i = 0; i < 16; i++) {
-        if (bytes[i] !== 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function isIpv4MappedLoopback(bytes) {
-    return isIpv4Mapped(bytes)
-        && bytes[12] === 127
-        && bytes[13] === 0
-        && bytes[14] === 0
-        && bytes[15] === 1;
 }
 
 function formatConnectAuthority(target, port) {
@@ -200,6 +179,24 @@ function restoreSocketFlags(sockfd, flags) {
     fcntl(sockfd, F_SETFL, flags);
 }
 
+function lastConnectError() {
+    if (Process.platform === 'windows') {
+        var WSAGetLastError = new NativeFunction(globalExport('WSAGetLastError'), 'int', []);
+        return WSAGetLastError();
+    }
+    try {
+        var errnoLoc = new NativeFunction(globalExport('__errno_location'), 'pointer', []);
+        return errnoLoc().readS32();
+    } catch (e) {
+        return 0;
+    }
+}
+
+function isConnectPendingError(err) {
+    return err === 11 || err === 35 || err === 36 || err === 37 || err === 114 || err === 115
+        || err === 10035 || err === 10036 || err === 10037;
+}
+
 var recvCarry = {};
 
 function storeCarry(sockfd, bytes) {
@@ -247,6 +244,89 @@ function hookRecvCarry(recv_p) {
     });
 }
 
+function sendAll(sockfd, socket_send, text) {
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) {
+        bytes.push(text.charCodeAt(i) & 0xff);
+    }
+    var buf = Memory.alloc(bytes.length);
+    buf.writeByteArray(bytes);
+    var sent = 0;
+    while (sent < bytes.length) {
+        var n = socket_send(sockfd, buf.add(sent), bytes.length - sent, 0);
+        if (n <= 0) {
+            return false;
+        }
+        sent += n;
+    }
+    return true;
+}
+
+function failConnect(retval, sockfd, originalFlags) {
+    delete recvCarry[sockfd];
+    restoreSocketFlags(sockfd, originalFlags);
+    if (Process.platform === 'windows') {
+        var WSASetLastError = new NativeFunction(globalExport('WSASetLastError'), 'void', ['int']);
+        WSASetLastError(10054);
+        var closesocket = new NativeFunction(globalExport('closesocket'), 'int', ['int']);
+        closesocket(sockfd);
+    } else {
+        var shutdown = new NativeFunction(globalExport('shutdown'), 'int', ['int']);
+        var close = new NativeFunction(globalExport('close'), 'int', ['int']);
+        shutdown(sockfd, 2);
+        close(sockfd);
+        try {
+            var errnoLoc = new NativeFunction(globalExport('__errno_location'), 'pointer', []);
+            errnoLoc().writeS32(111);
+        } catch (e) { }
+    }
+    retval.replace(-1);
+}
+
+function readConnectResponse(sockfd, socket_recv) {
+    var buf = Memory.alloc(MAX_CONNECT_HEADER_BYTES);
+    var total = 0;
+    var attempts = 0;
+    while (total < MAX_CONNECT_HEADER_BYTES && attempts < MAX_CONNECT_IDLE_RECV) {
+        var recv_return = socket_recv(sockfd, buf.add(total), MAX_CONNECT_HEADER_BYTES - total, 0);
+        if (recv_return > 0) {
+            total += recv_return;
+            var verdict = evaluateConnectResponse(bytesFromBuffer(buf, total));
+            if (verdict.reason !== 'incomplete') {
+                return verdict;
+            }
+            continue;
+        }
+        if (recv_return === 0) {
+            break;
+        }
+        if (Process.platform === 'windows') {
+            Thread.sleep(CONNECT_RECV_SLEEP_SEC);
+        }
+        attempts++;
+    }
+    return evaluateConnectResponse(total > 0 ? bytesFromBuffer(buf, total) : []);
+}
+
+function performSyntheticConnect(sockfd, socket_send, socket_recv, authority, retval, originalFlags) {
+    var connect_request = "CONNECT " + authority + " HTTP/1.1\r\n"
+        + "Host: " + authority + "\r\n"
+        + "\r\n";
+    if (!sendAll(sockfd, socket_send, connect_request)) {
+        failConnect(retval, sockfd, originalFlags);
+        return;
+    }
+    var verdict = readConnectResponse(sockfd, socket_recv);
+    if (!verdict.ok) {
+        failConnect(retval, sockfd, originalFlags);
+        return;
+    }
+    if (verdict.leftover && verdict.leftover.length > 0) {
+        storeCarry(sockfd, verdict.leftover);
+    }
+    restoreSocketFlags(sockfd, originalFlags);
+}
+
 function hookConnect(connect_p, send_p, recv_p) {
     var socket_send = new NativeFunction(send_p, 'int', ['int', 'pointer', 'int', 'int']);
     var socket_recv = new NativeFunction(recv_p, 'int', ['int', 'pointer', 'int', 'int']);
@@ -269,10 +349,10 @@ function hookConnect(connect_p, send_p, recv_p) {
 
             if (isTCP4) {
                 this.sa_family = 2;
-                this.addrKey = ipv4FromSockaddr(sockaddr_p);
-                this.addrBytes = null;
+                this.addrBytes = ipv4BytesFromSockaddr(sockaddr_p);
+                this.addrKey = ipv4StringFromBytes(this.addrBytes);
 
-                if (this.addrKey === '127.0.0.1' || this.addrKey === '0.0.0.0') {
+                if (shouldBypassAddress(this.sa_family, this.addrBytes)) {
                     this.hook = false;
                     return;
                 }
@@ -285,9 +365,7 @@ function hookConnect(connect_p, send_p, recv_p) {
                 this.addrBytes = ipv6BytesFromSockaddr(sockaddr_p);
                 this.addrKey = ipv6KeyFromBytes(this.addrBytes);
 
-                if (isIpv6Loopback(this.addrBytes)
-                    || isIpv6Unspecified(this.addrBytes)
-                    || isIpv4MappedLoopback(this.addrBytes)) {
+                if (shouldBypassAddress(this.sa_family, this.addrBytes)) {
                     this.hook = false;
                     return;
                 }
@@ -315,45 +393,17 @@ function hookConnect(connect_p, send_p, recv_p) {
             if (!this.hook) {
                 return;
             }
+            if (retval.toInt32() !== 0) {
+                if (!isConnectPendingError(lastConnectError())) {
+                    return;
+                }
+            }
             var sockfd = this.sockfd.toInt32();
             var originalFlags = setBlockingSocket(sockfd);
 
             var target = connectTarget(this.addrKey);
             var authority = formatConnectAuthority(target, this.port);
-            var connect_request = "CONNECT " + authority + " HTTP/1.1\r\n"
-                + "Host: " + authority + "\r\n"
-                + "Proxy-Connection: Keep-Alive\r\n"
-                + "\r\n";
-            var buf_send = Memory.allocUtf8String(connect_request);
-            socket_send(sockfd, buf_send, connect_request.length, 0);
-
-            var buf_recv = Memory.alloc(4096);
-            var total = 0;
-            var attempts = 0;
-            while (total < 4096 && attempts < 200) {
-                var recv_return = socket_recv(sockfd, buf_recv.add(total), 4096 - total, 0);
-                if (recv_return > 0) {
-                    total += recv_return;
-                    var preview = buf_recv.readUtf8String(total);
-                    var headerEnd = preview ? preview.indexOf('\r\n\r\n') : -1;
-                    if (headerEnd >= 0) {
-                        headerEnd += 4;
-                        if (total > headerEnd) {
-                            var leftover = buf_recv.add(headerEnd).readByteArray(total - headerEnd);
-                            storeCarry(sockfd, Array.from(new Uint8Array(leftover)));
-                        }
-                        break;
-                    }
-                    continue;
-                }
-                if (recv_return === 0) {
-                    break;
-                }
-                Thread.sleep(0.05);
-                attempts++;
-            }
-            Thread.sleep(0.05);
-            restoreSocketFlags(sockfd, originalFlags);
+            performSyntheticConnect(sockfd, socket_send, socket_recv, authority, retval, originalFlags);
         }
     });
 }

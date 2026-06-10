@@ -6,6 +6,8 @@
   "scripts": {
     "smoke": "node --import tsx ./node_modules/zx/build/cli.js scripts/smoke.zx.ts",
     "test": "npm run smoke",
+    "test:bypass": "node --test scripts/connect-bypass.test.ts",
+    "test:handshake": "node --test scripts/connect-handshake.test.ts",
     "coverage": "node --import tsx ./node_modules/zx/build/cli.js scripts/coverage.zx.ts",
     "format:js": "biome format --write",
     "format:rs": "cargo fmt",

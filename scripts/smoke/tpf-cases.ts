@@ -4,6 +4,9 @@ export type TpfSmokeTarget =
   | "localHttp"
   | "localSse"
   | "localImage"
+  | "remoteHttp"
+  | "remoteImage"
+  | "remoteSse"
   | "remoteHttp2"
   | "localHttp2"
   | "localHttp2c";
@@ -94,7 +97,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "smoke-value",
   },
   {
-    name: "mitm_pass",
+    name: "mitm_loopback_bypass",
     mode: "mitm",
     tpf: "pass",
     expectExit: 0,
@@ -102,12 +105,20 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     target: "localHttp",
   },
   {
+    name: "mitm_pass",
+    mode: "mitm",
+    tpf: "pass",
+    expectExit: 0,
+    expectStdoutNonempty: true,
+    target: "remoteHttp",
+  },
+  {
     name: "mitm_reject",
     mode: "mitm",
     tpf: "reject",
     expectExit: 0,
     expectStdoutContains: "Blocked by Guardian",
-    target: "localHttp",
+    target: "remoteHttp",
   },
   {
     name: "mitm_swap",
@@ -118,7 +129,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "SWAPPED_BODY",
     curlIncludeHeaders: true,
     expectContentType: "text/markdown",
-    target: "localHttp",
+    target: "remoteHttp",
   },
   {
     name: "mitm_http2",
@@ -130,12 +141,12 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     curlExtra: ["--http2"],
   },
   {
-    name: "mitm_http2_local",
+    name: "mitm_http2_tpf",
     mode: "mitm",
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    target: "localHttp2",
+    target: "remoteHttp2",
     curlExtra: ["--http2"],
   },
   {
@@ -143,8 +154,9 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     mode: "mitm",
     tpf: "pass",
     expectExit: 0,
-    expectStdoutContains: "smoke-sse-alpha",
-    target: "localSse",
+    expectStdoutContains: "event: ping",
+    target: "remoteSse",
+    curlExtra: ["--max-time", "6"],
   },
   {
     name: "mitm_image_swap",
@@ -156,6 +168,6 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "swapped by TPF mock",
     expectContentType: "text/markdown",
     expectStdoutNotContains: ["image/png"],
-    target: "localImage",
+    target: "remoteImage",
   },
 ];

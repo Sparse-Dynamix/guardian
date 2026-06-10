@@ -1,4 +1,4 @@
-export type SmokeCommand = "direct" | "child";
+export type SmokeCommand = "direct" | "child" | "interrupt";
 
 export interface SmokeCase {
   name: string;
@@ -19,5 +19,11 @@ export const smokeCases: SmokeCase[] = [
     command: "child",
     expectExit: 0,
     expectStdoutNonempty: true,
+  },
+  {
+    name: "interrupt_teardown",
+    command: "interrupt",
+    expectExit: 130,
+    expectStdoutNonempty: false,
   },
 ];
