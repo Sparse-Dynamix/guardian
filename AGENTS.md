@@ -70,7 +70,7 @@ guardian/
   patches/proxyapi+0.4.5.patch   # SNI cert, Connection: close, ContentFilter
   patches/proxyapi-tps-swap.patch # FilterVerdict::Replace + header/body swap
   scripts/smoke/
-    tpf-mock-server.ts   # Express /pass (200) + /reject (503)
+    test-servers.ts      # consolidated local HTTP/HTTP2/SSE/IPv6 + TPF mock (smoke + integration tests)
     tpf-cases.ts
     run-tpf-cases.ts
 ```
@@ -93,7 +93,7 @@ cargo build --release
 
 **Cargo integration** — real Frida/proxy where needed; payload echo tests without network.
 
-**Smoke** — `npm run smoke` builds release artifact, starts Express TPF mock (`scripts/smoke/tpf-mock-server.ts`), runs passthrough + TPF cases.
+**Smoke** — `npm run smoke` builds release artifact, starts consolidated test servers (`scripts/test-servers.ts`), runs passthrough + TPF cases.
 
 ```bash
 npm run smoke
@@ -114,6 +114,7 @@ TPF mock endpoints: `POST /pass` → 200 empty; `POST /reject` → 503; `POST /s
 | `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.guardian` | CA directory |
 | `filter_timeout_secs` | — | `GUARDIAN_FILTER_TIMEOUT_SECS` | `10` | Filter HTTP timeout |
 | `block_message` | — | `GUARDIAN_BLOCK_MESSAGE` | see toml | Substitution text on block |
+| `upstream_tls` | — | `GUARDIAN_UPSTREAM_TLS` | `default` | Upstream TLS trust: `default`, `default+ca:/path`, `ca-only:/path`, or `insecure` |
 
 Shipped defaults: [`config/guardian.toml`](config/guardian.toml).
 

@@ -29,7 +29,7 @@ pub fn start_proxy(settings: &Settings, bind_ip: IpAddr, port: u16) -> Result<Pr
         event_tx: None,
         content_filter,
         ca_dir: settings.ca_dir.clone(),
-        upstream_tls: Default::default(),
+        upstream_tls: settings.upstream_tls.clone(),
         intercept: None,
         body_capture_limit: None,
         replay_rx: None,

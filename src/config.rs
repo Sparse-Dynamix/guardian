@@ -1,9 +1,12 @@
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use config::{Config, Environment, File};
 use serde::Deserialize;
+
+use proxyapi::UpstreamTlsConfig;
 
 use crate::cli::{parse_bind_ipv4, Cli, SystemOpts};
 use crate::filter::{connect_filter_from_ports, DEFAULT_IGNORED_PORTS};
@@ -35,6 +38,7 @@ pub struct FileSettings {
     pub deno_tls_ca_store: String,
     pub node_options_append: String,
     pub trust_stores: Option<Vec<String>>,
+    pub upstream_tls: Option<String>,
 }
 
 impl Default for FileSettings {
@@ -61,6 +65,7 @@ impl Default for FileSettings {
             deno_tls_ca_store: "system,mozilla".to_string(),
             node_options_append: "--use-openssl-ca".to_string(),
             trust_stores: None,
+            upstream_tls: None,
         }
     }
 }
@@ -90,6 +95,7 @@ pub struct Settings {
     pub program: String,
     pub args: Vec<String>,
     pub trust_stores: Vec<String>,
+    pub upstream_tls: UpstreamTlsConfig,
 }
 
 fn home_dir_for_tilde() -> Result<PathBuf> {
@@ -232,6 +238,16 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         .clone()
         .unwrap_or_else(default_trust_stores);
 
+    // Read directly from the environment: `Environment::separator("_")` maps
+    // GUARDIAN_UPSTREAM_TLS to nested `upstream.tls`, not flat `upstream_tls`.
+    let upstream_tls = std::env::var("GUARDIAN_UPSTREAM_TLS")
+        .ok()
+        .or_else(|| file.upstream_tls.clone())
+        .map(|v| UpstreamTlsConfig::from_str(v.trim()))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("invalid upstream_tls: {e}"))?
+        .unwrap_or_default();
+
     Ok(Settings {
         bind: parse_bind_ipv4(bind_str)?,
         port,
@@ -256,6 +272,7 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         program: String::new(),
         args: vec![],
         trust_stores,
+        upstream_tls,
     })
 }
 

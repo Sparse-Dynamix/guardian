@@ -392,6 +392,7 @@ mod tests {
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],
+            upstream_tls: Default::default(),
         }
     }
 

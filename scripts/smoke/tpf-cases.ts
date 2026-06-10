@@ -1,5 +1,13 @@
 export type TpfCaseMode = "payload" | "mitm";
 
+export type TpfSmokeTarget =
+  | "localHttp"
+  | "localSse"
+  | "localImage"
+  | "remoteHttp2"
+  | "localHttp2"
+  | "localHttp2c";
+
 export interface TpfSmokeCase {
   name: string;
   mode: TpfCaseMode;
@@ -14,12 +22,10 @@ export interface TpfSmokeCase {
   expectContentType?: string;
   useStdin?: boolean;
   curlIncludeHeaders?: boolean;
-  /** MITM child curl URL override */
-  smokeUrl?: string;
+  /** MITM curl target */
+  target?: TpfSmokeTarget;
   /** Extra curl flags (e.g. --http2) */
   curlExtra?: string[];
-  /** Spawn a local origin server for this case */
-  localOrigin?: "sse" | "ipv6";
   env?: Record<string, string>;
   /** When set, child runs printenv for this variable instead of curl */
   printenvVar?: string;
@@ -76,6 +82,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "",
     expectExit: 0,
     expectStdoutNonempty: true,
+    target: "localHttp",
   },
   {
     name: "mitm_passthrough_env",
@@ -92,6 +99,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
+    target: "localHttp",
   },
   {
     name: "mitm_reject",
@@ -99,6 +107,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "reject",
     expectExit: 0,
     expectStdoutContains: "Blocked by Guardian",
+    target: "localHttp",
   },
   {
     name: "mitm_swap",
@@ -109,6 +118,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "SWAPPED_BODY",
     curlIncludeHeaders: true,
     expectContentType: "text/markdown",
+    target: "localHttp",
   },
   {
     name: "mitm_http2",
@@ -116,7 +126,16 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    smokeUrl: process.env.SMOKE_HTTPS_URL ?? "https://httpbingo.org/get",
+    target: "remoteHttp2",
+    curlExtra: ["--http2"],
+  },
+  {
+    name: "mitm_http2_local",
+    mode: "mitm",
+    tpf: "pass",
+    expectExit: 0,
+    expectStdoutNonempty: true,
+    target: "localHttp2",
     curlExtra: ["--http2"],
   },
   {
@@ -125,7 +144,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutContains: "smoke-sse-alpha",
-    localOrigin: "sse",
+    target: "localSse",
   },
   {
     name: "mitm_image_swap",
@@ -137,6 +156,6 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "swapped by TPF mock",
     expectContentType: "text/markdown",
     expectStdoutNotContains: ["image/png"],
-    smokeUrl: process.env.SMOKE_IMAGE_URL ?? "https://httpbingo.org/image/png",
+    target: "localImage",
   },
 ];

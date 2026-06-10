@@ -358,11 +358,12 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+    use std::sync::mpsc;
 
     use crate::ca::CaTrust;
     use crate::config::Settings;
 
-    use super::build_hook_bundle;
+    use super::{build_hook_bundle, recv_or_interrupted, terminate_pid, try_wait_pid, WaitStatus};
 
     fn test_settings() -> Settings {
         Settings {
@@ -389,6 +390,7 @@ mod tests {
             program: "true".to_string(),
             args: vec![],
             trust_stores: vec!["system".into()],
+            upstream_tls: Default::default(),
         }
     }
 
@@ -399,7 +401,7 @@ mod tests {
         assert!(bundle.connect_hook.contains("__guardianHostByIp"));
         assert!(bundle
             .connect_hook
-            .contains("filter(this.sa_family, this.addr, this.port, host)"));
+            .contains("filter(this.sa_family, this.addrKey, this.port, host)"));
     }
 
     #[test]
@@ -426,5 +428,59 @@ mod tests {
         assert!(bundle.connect_hook.contains("true"));
         assert!(bundle.connect_hook.contains("127.0.0.1"));
         assert!(bundle.env_inject.contains("SSL_CERT_FILE"));
+    }
+
+    #[test]
+    fn recv_or_interrupted_returns_value() {
+        let (tx, rx) = mpsc::channel();
+        let (_itx, irx) = mpsc::channel::<()>();
+        tx.send(42).unwrap();
+        assert_eq!(recv_or_interrupted(&rx, &irx, 10).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn recv_or_interrupted_returns_none_on_interrupt() {
+        let (_tx, rx) = mpsc::channel::<i32>();
+        let (itx, irx) = mpsc::channel();
+        itx.send(()).unwrap();
+        assert!(recv_or_interrupted(&rx, &irx, 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn recv_or_interrupted_errors_when_sender_dropped() {
+        let (tx, rx) = mpsc::channel::<i32>();
+        let (_itx, irx) = mpsc::channel::<()>();
+        drop(tx);
+        let err = recv_or_interrupted(&rx, &irx, 10).unwrap_err();
+        assert!(err.to_string().contains("coordinator channel closed"));
+    }
+
+    #[test]
+    fn try_wait_current_pid_still_running() {
+        let pid = std::process::id();
+        assert!(matches!(try_wait_pid(pid), WaitStatus::StillRunning));
+    }
+
+    #[test]
+    fn try_wait_missing_pid_exited() {
+        assert!(matches!(try_wait_pid(4_000_000), WaitStatus::Exited(0)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminate_pid_escalates_past_sigint() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("bash")
+            .args(["-c", "trap '' INT; while true; do sleep 1; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn bash sleeper");
+        let pid = child.id();
+        terminate_pid(pid);
+        let status = child.wait().expect("wait child");
+        assert!(!status.success());
     }
 }

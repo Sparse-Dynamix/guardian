@@ -1,15 +1,12 @@
 mod common;
 
-use common::{require_network, smoke_url, spawn_tpf_mock, staged_curl_program, staged_sh_program};
+use common::{spawn_test_servers, staged_curl_program, staged_sh_program, TestServersConfig};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 #[test]
 #[cfg(target_os = "macos")]
 fn shell_exec_replacement_surfaces_reinstrument_failure() {
-    if !require_network() {
-        return;
-    }
     let Some(sh) = staged_sh_program() else {
         eprintln!("skipping: staged guardian-sh not found (run scripts/coverage-mac.zx.ts once)");
         return;
@@ -19,18 +16,18 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
         return;
     };
 
-    let url = smoke_url();
+    let servers = spawn_test_servers(TestServersConfig::default());
+    let url = servers.http_get_url.clone();
     let inner = format!("{curl} -sSf '{url}'");
 
     let _mitm_guard = common::acquire_mitm_test_lock();
     let ca_dir = TempDir::new().expect("ca dir");
-    let mock = spawn_tpf_mock();
     let mut child = Command::new(common::guardian_bin());
     child.args([
         "--ca-dir",
         ca_dir.path().to_str().unwrap(),
         "--tpf",
-        &mock.pass_url,
+        &servers.pass_url,
         "--",
         &sh,
         "-c",

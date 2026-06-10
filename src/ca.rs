@@ -419,6 +419,7 @@ mod tests {
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],
+            upstream_tls: Default::default(),
         };
         let mut trust = CaTrust::from_settings(&settings);
         let err = trust.ensure_artifacts(&settings).unwrap_err();
@@ -468,6 +469,7 @@ mod tests {
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],
+            upstream_tls: Default::default(),
         };
         let prev = std::env::var_os("JAVA_HOME");
         std::env::set_var("JAVA_HOME", &jdk);
@@ -535,6 +537,7 @@ mod tests {
             program: String::new(),
             args: vec![],
             trust_stores: vec!["system".into()],
+            upstream_tls: Default::default(),
         };
         let mut trust = CaTrust::from_settings(&settings);
         trust.ensure_artifacts(&settings).unwrap();

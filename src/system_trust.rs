@@ -76,29 +76,33 @@ fn find_certutil() -> Option<std::path::PathBuf> {
     which::which("certutil").ok()
 }
 
+fn nss_profile_dirs(home: &str) -> Vec<String> {
+    let mut profiles = vec![format!("sql:{home}/.pki/nssdb")];
+    for base in [
+        format!("{home}/.mozilla/firefox"),
+        format!("{home}/snap/firefox/common/.mozilla/firefox"),
+    ] {
+        for p in list_subdirs(&base) {
+            profiles.push(format!("sql:{p}"));
+        }
+    }
+    let chromium = format!("{home}/snap/chromium/current/.pki/nssdb");
+    if Path::new(&chromium).is_dir() {
+        profiles.push(format!("sql:{chromium}"));
+    }
+    profiles
+}
+
 pub fn check_nss_store(ca_dir: &Path) -> Result<bool> {
     let certutil = match find_certutil() {
         Some(p) => p,
         None => return Ok(false),
     };
     let alias = ca_unique_name(ca_dir)?;
-    let mut profiles = vec![];
-
-    if let Ok(home) = std::env::var("HOME") {
-        profiles.push(format!("sql:{home}/.pki/nssdb"));
-        for base in [
-            format!("{home}/.mozilla/firefox"),
-            format!("{home}/snap/firefox/common/.mozilla/firefox"),
-        ] {
-            for p in list_subdirs(&base) {
-                profiles.push(format!("sql:{p}"));
-            }
-        }
-        let chromium = format!("{home}/snap/chromium/current/.pki/nssdb");
-        if Path::new(&chromium).is_dir() {
-            profiles.push(format!("sql:{chromium}"));
-        }
-    }
+    let profiles = std::env::var("HOME")
+        .ok()
+        .map(|home| nss_profile_dirs(&home))
+        .unwrap_or_default();
 
     for profile in profiles {
         let status = Command::new(&certutil)
@@ -350,6 +354,19 @@ mod tests {
     #[test]
     fn list_subdirs_missing_base_returns_empty() {
         assert!(list_subdirs("/nonexistent/guardian-nss-profiles").is_empty());
+    }
+
+    #[test]
+    fn nss_profile_dirs_includes_standard_locations() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".pki/nssdb")).unwrap();
+        std::fs::create_dir_all(home.path().join(".mozilla/firefox/abc.default")).unwrap();
+        std::fs::create_dir_all(home.path().join("snap/chromium/current/.pki/nssdb")).unwrap();
+        let home_str = home.path().to_str().unwrap();
+        let profiles = nss_profile_dirs(home_str);
+        assert!(profiles.iter().any(|p| p.ends_with(".pki/nssdb")));
+        assert!(profiles.iter().any(|p| p.contains("abc.default")));
+        assert!(profiles.iter().any(|p| p.contains("chromium")));
     }
 
     #[test]

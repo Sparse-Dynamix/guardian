@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { $, usePowerShell } from "zx";
 import { tpfSmokeCases } from "./tpf-cases.ts";
-import type { TpfSmokeCase } from "./tpf-cases.ts";
+import type { TpfSmokeCase, TpfSmokeTarget } from "./tpf-cases.ts";
 import {
   assertContentType,
   assertExit,
@@ -13,8 +13,7 @@ import {
   assertStdoutNotContains,
   assertStdoutNonempty,
 } from "./assert.ts";
-import type { TpfMockServer } from "./tpf-mock-server.ts";
-import { startLocalOrigin } from "./local-origin.ts";
+import type { TestServers } from "../test-servers.ts";
 import { assertGuardianBuilt, platformConfig } from "./platform.ts";
 import { cdRepo, REPO_ROOT } from "../lib/repo.ts";
 import { hostPlatform } from "../lib/guard.ts";
@@ -24,11 +23,38 @@ if (process.platform === "win32") {
   usePowerShell();
 }
 
-const DEFAULT_SMOKE_URL = "http://httpbingo.org/get";
 const SMOKE_RETRIES = 3;
 
-function smokeUrl(caseUrl?: string): string {
-  return caseUrl ?? process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
+interface CaseTarget {
+  url: string;
+  env?: Record<string, string>;
+}
+
+function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
+  const target: TpfSmokeTarget = c.target ?? "localHttp";
+  switch (target) {
+    case "localHttp":
+      return { url: servers.http.getUrl };
+    case "localSse":
+      return { url: `${servers.sse.baseUrl}/` };
+    case "localImage":
+      return { url: servers.http.imagePngUrl };
+    case "remoteHttp2":
+      return {
+        url: process.env.SMOKE_HTTPS_URL ?? "https://httpbingo.org/get",
+      };
+    case "localHttp2":
+      return {
+        url: servers.http2.getUrl,
+        env: {
+          GUARDIAN_UPSTREAM_TLS: `default+ca:${servers.originCaPem}`,
+        },
+      };
+    case "localHttp2c":
+      return { url: servers.http2c.getUrl };
+    default:
+      return { url: servers.http.getUrl };
+  }
 }
 
 function makeCaDir(): string {
@@ -36,13 +62,13 @@ function makeCaDir(): string {
 }
 
 function tpfUrl(
-  server: TpfMockServer,
+  servers: TestServers,
   which: TpfSmokeCase["tpf"],
 ): string | undefined {
-  if (which === "pass") return server.passUrl;
-  if (which === "reject") return server.rejectUrl;
-  if (which === "swap") return server.swapUrl;
-  if (which === "image-swap") return server.imageSwapUrl;
+  if (which === "pass") return servers.tpf.passUrl;
+  if (which === "reject") return servers.tpf.rejectUrl;
+  if (which === "swap") return servers.tpf.swapUrl;
+  if (which === "image-swap") return servers.tpf.imageSwapUrl;
   return undefined;
 }
 
@@ -59,6 +85,7 @@ function curlArgs(
   includeHeaders: boolean,
   failOnHttpError: boolean,
   extra: string[] = [],
+  tpfActive = false,
 ): string[] {
   const args = [config.curl, failOnHttpError ? "-sSf" : "-sS", ...extra];
   if (includeHeaders) {
@@ -68,7 +95,9 @@ function curlArgs(
     args.push("--ipv4");
   }
   if (url.startsWith("https://")) {
-    args.push("--cacert", path.join(caDir, "guardian-ca-bundle.pem"));
+    if (tpfActive) {
+      args.push("--cacert", path.join(caDir, "guardian-ca-bundle.pem"));
+    }
     if (hostPlatform() === "win") {
       args.push("--ipv4", "--ssl-no-revoke");
     }
@@ -92,6 +121,7 @@ function childArgs(
   }
 
   const failOnHttpError = c.tpf !== "reject";
+  const tpfActive = c.tpf !== "";
   const curl = curlArgs(
     config,
     url,
@@ -99,6 +129,7 @@ function childArgs(
     c.curlIncludeHeaders ?? false,
     failOnHttpError,
     c.curlExtra ?? [],
+    tpfActive,
   );
 
   if (hostPlatform() === "win") {
@@ -145,10 +176,10 @@ async function runGuardianProcess(
 
 async function runPayloadCase(
   c: TpfSmokeCase,
-  server: TpfMockServer,
+  servers: TestServers,
 ): Promise<RunResult> {
   const args: string[] = [];
-  const url = tpfUrl(server, c.tpf);
+  const url = tpfUrl(servers, c.tpf);
   if (url) {
     args.push("--tpf", url);
   }
@@ -164,13 +195,14 @@ async function runPayloadCase(
 
 async function runMitmCase(
   c: TpfSmokeCase,
-  server: TpfMockServer,
+  servers: TestServers,
   url: string,
+  extraEnv?: Record<string, string>,
 ): Promise<RunResult> {
   const config = platformConfig();
   const caDir = makeCaDir();
   const args: string[] = ["--ca-dir", caDir];
-  const tpf = tpfUrl(server, c.tpf);
+  const tpf = tpfUrl(servers, c.tpf);
   if (tpf) {
     args.push("--tpf", tpf);
   }
@@ -178,21 +210,18 @@ async function runMitmCase(
     args.push("--tps");
   }
   args.push("--", ...childArgs(config, c, url, caDir));
-  return runGuardianProcess(args, undefined, c.env);
+  return runGuardianProcess(args, undefined, { ...extraEnv, ...c.env });
 }
 
-async function runCase(
-  c: TpfSmokeCase,
-  server: TpfMockServer,
-  url: string,
-): Promise<void> {
+async function runCase(c: TpfSmokeCase, servers: TestServers): Promise<void> {
   console.log(`==> tpf smoke case: ${c.name}`);
+  const { url, env } = resolveCaseTarget(c, servers);
   let lastError: unknown;
   for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
     const result =
       c.mode === "payload"
-        ? await runPayloadCase(c, server)
-        : await runMitmCase(c, server, url);
+        ? await runPayloadCase(c, servers)
+        : await runMitmCase(c, servers, url, env);
 
     try {
       assertExit(c.expectExit, result.exitCode);
@@ -232,23 +261,13 @@ async function runCase(
   throw lastError;
 }
 
-export async function runTpfSmokeCases(server: TpfMockServer): Promise<void> {
+export async function runTpfSmokeCases(servers: TestServers): Promise<void> {
   cdRepo();
   const config = platformConfig();
   assertGuardianBuilt(config);
 
   for (const c of tpfSmokeCases) {
-    if (c.localOrigin) {
-      const origin = await startLocalOrigin(c.localOrigin);
-      try {
-        await runCase(c, server, origin.baseUrl);
-      } finally {
-        await origin.close();
-      }
-      continue;
-    }
-    const url = smokeUrl(c.smokeUrl);
-    await runCase(c, server, url);
+    await runCase(c, servers);
   }
   console.log("All TPF smoke cases passed.");
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { $, usePowerShell } from "zx";
 import { smokeCases } from "./cases.ts";
 import type { SmokeCase } from "./cases.ts";
+import type { TestServers } from "../test-servers.ts";
 import {
   assertExit,
   assertNoJsonlOnStderr,
@@ -18,12 +19,7 @@ if (process.platform === "win32") {
   usePowerShell();
 }
 
-const DEFAULT_SMOKE_URL = "http://httpbingo.org/get";
 const SMOKE_RETRIES = 3;
-
-function smokeUrl(): string {
-  return process.env.SMOKE_URL ?? DEFAULT_SMOKE_URL;
-}
 
 function makeCaDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "guardian-smoke-ca-"));
@@ -35,22 +31,22 @@ interface RunResult {
   stderrFile: string;
 }
 
-function runGuardian(guardianArgs: string[]): RunResult {
+async function runGuardian(guardianArgs: string[]): Promise<RunResult> {
   const config = platformConfig();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guardian-smoke-run-"));
   const outPath = path.join(dir, "stdout");
   const stderrFile = path.join(dir, "stderr");
 
-  const shell = $.sync({
+  const opts = {
     cwd: REPO_ROOT,
     quiet: true,
     nothrow: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    stdio: ["ignore", "pipe", "pipe"] as const,
+  };
   const result =
     hostPlatform() === "win"
-      ? shell`& ${config.guardianBin} ${guardianArgs}`
-      : shell`${config.guardianBin} ${guardianArgs}`;
+      ? await $(opts)`& ${config.guardianBin} ${guardianArgs}`
+      : await $(opts)`${config.guardianBin} ${guardianArgs}`;
   fs.writeFileSync(outPath, result.stdout ?? "");
   fs.writeFileSync(stderrFile, result.stderr ?? "");
 
@@ -70,7 +66,7 @@ function curlArgs(url: string): string[] {
   return args;
 }
 
-function runDirect(url: string): RunResult {
+async function runDirect(url: string): Promise<RunResult> {
   const config = platformConfig();
   const caDir = makeCaDir();
   const guardianArgs: string[] = [
@@ -83,7 +79,7 @@ function runDirect(url: string): RunResult {
   return runGuardian(guardianArgs);
 }
 
-function runChild(url: string): RunResult {
+async function runChild(url: string): Promise<RunResult> {
   const config = platformConfig();
   const caDir = makeCaDir();
   const guardianArgs: string[] = ["--ca-dir", caDir, "--"];
@@ -103,11 +99,12 @@ function runChild(url: string): RunResult {
   return runGuardian(guardianArgs);
 }
 
-function runCase(c: SmokeCase, url: string): void {
+async function runCase(c: SmokeCase, url: string): Promise<void> {
   console.log(`==> smoke case: ${c.name}`);
   let lastError: unknown;
   for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
-    const result = c.command === "direct" ? runDirect(url) : runChild(url);
+    const result =
+      c.command === "direct" ? await runDirect(url) : await runChild(url);
 
     try {
       assertExit(c.expectExit, result.exitCode);
@@ -128,22 +125,22 @@ function runCase(c: SmokeCase, url: string): void {
         force: true,
       });
       if (attempt < SMOKE_RETRIES) {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+        await new Promise((r) => setTimeout(r, 2000));
       }
     }
   }
   throw lastError;
 }
 
-export async function runSmokeCases(): Promise<void> {
+export async function runSmokeCases(servers: TestServers): Promise<void> {
   cdRepo();
   const config = platformConfig();
   assertGuardianBuilt(config);
 
-  const url = smokeUrl();
+  const url = process.env.SMOKE_URL ?? servers.http.getUrl;
 
   for (const c of smokeCases) {
-    runCase(c, url);
+    await runCase(c, url);
   }
   console.log("All smoke cases passed.");
 }

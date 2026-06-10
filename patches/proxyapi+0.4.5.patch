@@ -294,7 +294,7 @@ index df82827..604c0df 100644
  mod tests {
      use super::*;
 diff --git a/src/ca/mod.rs b/src/ca/mod.rs
-index 4d4e883..690870d 100644
+index 4d4e883..e7c4d47 100644
 --- a/src/ca/mod.rs
 +++ b/src/ca/mod.rs
 @@ -51,8 +51,8 @@ impl Ssl {
@@ -308,19 +308,103 @@ index 4d4e883..690870d 100644
  
          let (pkey, ca_cert) = if cert_path.exists() && key_path.exists() {
              tracing::info!("Loading CA certificate from {}", dir.display());
+@@ -108,7 +108,7 @@ impl Ssl {
+         self.ca_cert_pem.clone()
+     }
+ 
+-    fn gen_cert(
++    pub(crate) fn gen_cert(
+         &self,
+         authority: &Authority,
+     ) -> Result<CertificateDer<'static>, crate::error::Error> {
+@@ -130,9 +130,14 @@ impl Ssl {
+         x509_builder.set_pubkey(&self.pkey)?;
+         x509_builder.set_issuer_name(self.ca_cert.subject_name())?;
+ 
+-        let alternative_name = SubjectAlternativeName::new()
+-            .dns(authority.host())
+-            .build(&x509_builder.x509v3_context(Some(&self.ca_cert), None))?;
++        let mut san = SubjectAlternativeName::new();
++        if authority.host().parse::<std::net::IpAddr>().is_ok() {
++            san.ip(authority.host());
++        } else {
++            san.dns(authority.host());
++        }
++        let alternative_name =
++            san.build(&x509_builder.x509v3_context(Some(&self.ca_cert), None))?;
+         x509_builder.append_extension(alternative_name)?;
+ 
+         let mut serial_number = [0; 16];
+@@ -224,3 +229,59 @@ impl CertificateAuthority for Ssl {
+         Ok(server_cfg)
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use openssl::x509::X509;
++
++    fn san_entries(cert: &X509) -> Vec<String> {
++        let san = cert
++            .subject_alt_names()
++            .expect("subjectAltName extension");
++        san.iter()
++            .map(|entry| {
++                let ty = entry.type_id();
++                if ty == openssl::nid::Nid::IPADDRESS {
++                    entry
++                        .ipaddress()
++                        .map(|bytes| {
++                            if bytes.len() == 4 {
++                                format!(
++                                    "{}.{}.{}.{}",
++                                    bytes[0], bytes[1], bytes[2], bytes[3]
++                                )
++                            } else {
++                                format!("{bytes:?}")
++                            }
++                        })
++                        .unwrap_or_else(|| entry.type_str().to_string())
++                } else {
++                    entry.dnsname().unwrap_or("").to_string()
++                }
++            })
++            .collect()
++    }
++
++    #[test]
++    fn gen_cert_uses_ip_san_for_literal_ipv4() {
++        let dir = tempfile::tempdir().unwrap();
++        let ssl = Ssl::load_or_generate(dir.path()).unwrap();
++        let authority: Authority = "127.0.0.2:443".parse().unwrap();
++        let der = ssl.gen_cert(&authority).unwrap();
++        let cert = X509::from_der(der.as_ref()).unwrap();
++
++        assert_eq!(san_entries(&cert), vec!["127.0.0.2"]);
++    }
++
++    #[test]
++    fn gen_cert_uses_dns_san_for_hostname() {
++        let dir = tempfile::tempdir().unwrap();
++        let ssl = Ssl::load_or_generate(dir.path()).unwrap();
++        let authority: Authority = "example.com:443".parse().unwrap();
++        let der = ssl.gen_cert(&authority).unwrap();
++        let cert = X509::from_der(der.as_ref()).unwrap();
++
++        assert_eq!(san_entries(&cert), vec!["example.com"]);
++    }
++}
 diff --git a/src/content_filter.rs b/src/content_filter.rs
 new file mode 100644
-index 0000000..8d1f423
+index 0000000..68a5cf7
 --- /dev/null
 +++ b/src/content_filter.rs
 @@ -0,0 +1,39 @@
-+//! Optional response/frame filtering hook for MITM proxies.
-+
 +use async_trait::async_trait;
 +use bytes::Bytes;
-+use http::HeaderMap;
 +
-+/// Context for filtering an HTTP response before it reaches the client.
++/// Context supplied when filtering an HTTP response body.
 +pub struct HttpFilterContext<'a> {
 +    pub method: &'a str,
 +    pub url: &'a str,
@@ -329,35 +413,45 @@ index 0000000..8d1f423
 +    pub body: &'a [u8],
 +}
 +
-+/// Context for filtering a WebSocket frame before it reaches the client.
++/// Context supplied when filtering a WebSocket frame.
 +pub struct WsFilterContext<'a> {
 +    pub direction: &'a str,
 +    pub opcode: &'a str,
 +    pub payload: &'a [u8],
 +}
 +
-+/// Result of a content safety check.
-+#[derive(Debug, Clone, PartialEq, Eq)]
++/// Decision returned by a content filter.
++#[derive(Debug)]
 +pub enum FilterVerdict {
 +    Allow,
-+    Block { message: Bytes },
++    Block {
++        message: Bytes,
++    },
 +    Replace {
 +        body: Bytes,
-+        headers: HeaderMap,
++        headers: http::HeaderMap,
 +    },
 +}
 +
-+/// Async hook invoked after upstream content is captured and before the client sees it.
++/// Content filter used by embedded MITM paths before data reaches the client.
 +#[async_trait]
 +pub trait ContentFilter: Send + Sync {
 +    async fn check_http_response(&self, ctx: HttpFilterContext<'_>) -> FilterVerdict;
++
 +    async fn check_ws_frame(&self, ctx: WsFilterContext<'_>) -> FilterVerdict;
 +}
 diff --git a/src/handler.rs b/src/handler.rs
-index f73ac81..c90d211 100644
+index f73ac81..8a7f4c0 100644
 --- a/src/handler.rs
 +++ b/src/handler.rs
-@@ -8,6 +8,7 @@ use std::sync::Arc;
+@@ -1,6 +1,5 @@
+ use async_trait::async_trait;
+ use bytes::{Bytes, BytesMut};
+-use http_body_util::BodyExt;
+ use hyper::body::Body as HttpBody;
+ use hyper::{Request, Response};
+ use proxyapi_models::{ProxiedRequest, ProxiedResponse};
+@@ -8,6 +7,7 @@ use std::sync::Arc;
  use tokio::sync::{mpsc, Notify};
  
  use crate::body::{self, BodyCapture, BodySnapshot, ProxyBody};
@@ -365,7 +459,7 @@ index f73ac81..c90d211 100644
  use crate::event::{next_id, ProxyEvent};
  use crate::intercept::{InterceptConfig, InterceptDecision};
  use crate::{HttpContext, HttpHandler, RequestOrResponse};
-@@ -126,7 +127,6 @@ impl CapturedRequest {
+@@ -126,7 +126,6 @@ impl CapturedRequest {
          }
      }
  
@@ -373,7 +467,7 @@ index f73ac81..c90d211 100644
      fn request_line(&self) -> (String, String) {
          match self {
              Self::Buffered(request) => (
-@@ -138,6 +138,31 @@ impl CapturedRequest {
+@@ -138,6 +137,31 @@ impl CapturedRequest {
      }
  }
  
@@ -386,26 +480,26 @@ index f73ac81..c90d211 100644
 +}
 +
 +fn is_streaming_response(parts: &http::response::Parts) -> bool {
-+    if is_sse_response(parts) {
-+        return true;
-+    }
++    // Only SSE needs incremental gated filtering. HTTP/2 omits Content-Length for
++    // finite bodies; HTTP/1.1 may use chunked or close-delimited encoding without
++    // a Content-Length header. Those are fully collected before a single TPF check.
++    // Treating them as streaming misroutes through FilteredStreamBody and stalls clients.
++    is_sse_response(parts)
++}
 +
-+    if parts
-+        .headers
-+        .get(http::header::TRANSFER_ENCODING)
-+        .and_then(|value| value.to_str().ok())
-+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
-+    {
-+        return true;
++fn ensure_content_length(parts: &mut http::response::Parts, body_len: usize) {
++    if parts.headers.contains_key(http::header::CONTENT_LENGTH) {
++        return;
 +    }
-+
-+    !parts.headers.contains_key(http::header::CONTENT_LENGTH)
++    if let Ok(value) = http::HeaderValue::from_str(&body_len.to_string()) {
++        parts.headers.insert(http::header::CONTENT_LENGTH, value);
++    }
 +}
 +
  fn log_truncated_capture(kind: &str, snapshot: &BodySnapshot) {
      if snapshot.truncated {
          tracing::warn!(
-@@ -148,7 +173,10 @@ fn log_truncated_capture(kind: &str, snapshot: &BodySnapshot) {
+@@ -148,7 +172,10 @@ fn log_truncated_capture(kind: &str, snapshot: &BodySnapshot) {
      }
  }
  
@@ -417,7 +511,7 @@ index f73ac81..c90d211 100644
      match tx.try_send(event) {
          Ok(()) => {}
          Err(mpsc::error::TrySendError::Full(_)) => {
-@@ -161,7 +189,7 @@ fn try_send_event(tx: &mpsc::Sender<ProxyEvent>, event: ProxyEvent) {
+@@ -161,7 +188,7 @@ fn try_send_event(tx: &mpsc::Sender<ProxyEvent>, event: ProxyEvent) {
  }
  
  fn send_request_complete(
@@ -426,7 +520,90 @@ index f73ac81..c90d211 100644
      id: u64,
      request: ProxiedRequest,
      response: ProxiedResponse,
-@@ -273,7 +301,8 @@ where
+@@ -221,47 +248,55 @@ impl HookedResponseBody {
+ ///
+ /// When the body exceeds the limit, returns a reconstructed streaming body that
+ /// first replays already-read bytes, then continues the original body.
+-async fn collect_body<B>(mut body: B, limit: Option<usize>, kind: &'static str) -> BodyCollection
++async fn collect_body<B>(body: B, limit: Option<usize>, kind: &'static str) -> BodyCollection
+ where
+     B: HttpBody<Data = Bytes, Error = hyper::Error> + Send + Sync + Unpin + 'static,
+ {
+-    let mut buffer = BytesMut::new();
++    use http_body_util::BodyExt;
+ 
+-    while let Some(frame) = body.frame().await {
+-        let frame = match frame {
+-            Ok(frame) => frame,
++    if limit.is_none() {
++        return match body.collect().await {
++            Ok(collected) => BodyCollection::Complete(collected.to_bytes()),
+             Err(e) => {
+                 tracing::warn!("Failed to collect {kind} body: {e}");
+-                return BodyCollection::Complete(Bytes::new());
++                BodyCollection::Complete(Bytes::new())
+             }
+         };
++    }
+ 
+-        let Ok(data) = frame.into_data() else {
+-            continue;
+-        };
++    let limit = limit.unwrap();
++    let mut buffer = BytesMut::new();
++    let mut body = body;
+ 
+-        let Some(limit) = limit else {
+-            buffer.extend_from_slice(&data);
+-            continue;
++    while let Some(frame_result) = body.frame().await {
++        let frame = match frame_result {
++            Ok(frame) => frame,
++            Err(e) => {
++                tracing::warn!("Failed to collect {kind} body: {e}");
++                return BodyCollection::Complete(buffer.freeze());
++            }
+         };
+ 
+-        if buffer.len().saturating_add(data.len()) > limit {
+-            tracing::warn!(
+-                "{kind} body exceeded editable limit of {limit} bytes; streaming through without body editing"
+-            );
+-            let keep = limit.saturating_sub(buffer.len()).min(data.len());
+-            if keep > 0 {
+-                buffer.extend_from_slice(&data[..keep]);
++        if let Ok(data) = frame.into_data() {
++            if buffer.len().saturating_add(data.len()) > limit {
++                tracing::warn!(
++                    "{kind} body exceeded editable limit of {limit} bytes; streaming through without body editing"
++                );
++                let keep = limit.saturating_sub(buffer.len()).min(data.len());
++                if keep > 0 {
++                    buffer.extend_from_slice(&data[..keep]);
++                }
++                let captured = buffer.freeze();
++                let overflow = data.slice(keep..);
++                return BodyCollection::Exceeded {
++                    body: body::prefix([captured.clone(), overflow], body),
++                    captured,
++                };
+             }
+-            let captured = buffer.freeze();
+-            let overflow = data.slice(keep..);
+-            return BodyCollection::Exceeded {
+-                body: body::prefix([captured.clone(), overflow], body),
+-                captured,
+-            };
++            buffer.extend_from_slice(&data);
++        } else if body.is_end_stream() {
++            break;
+         }
+-
+-        buffer.extend_from_slice(&data);
+     }
+ 
+     BodyCollection::Complete(buffer.freeze())
+@@ -273,7 +308,8 @@ where
  /// Lua `on_request` / `on_response` hooks are called for every request/response.
  #[derive(Clone)]
  pub struct CapturingHandler {
@@ -436,7 +613,7 @@ index f73ac81..c90d211 100644
      captured_request: Option<CapturedRequest>,
      /// ID assigned at the start of `handle_request` so that related events
      /// share the same ID and the UI can correlate them.
-@@ -298,13 +327,14 @@ impl std::fmt::Debug for CapturingHandler {
+@@ -298,13 +334,14 @@ impl std::fmt::Debug for CapturingHandler {
  impl CapturingHandler {
      /// Create a new handler that sends events to the given channel.
      #[must_use]
@@ -452,7 +629,7 @@ index f73ac81..c90d211 100644
              #[cfg(feature = "scripting")]
              script_engine: None,
          }
-@@ -335,6 +365,13 @@ impl CapturingHandler {
+@@ -335,6 +372,13 @@ impl CapturingHandler {
          self
      }
  
@@ -466,7 +643,7 @@ index f73ac81..c90d211 100644
      pub(crate) fn take_captured_request(&mut self) -> Option<ProxiedRequest> {
          self.take_captured_request_state()
              .map(CapturedRequest::into_proxied_request)
-@@ -373,10 +410,14 @@ impl CapturingHandler {
+@@ -373,10 +417,14 @@ impl CapturingHandler {
      }
  
      /// Clone the event sender for use in long-lived spawned tasks (e.g. WS frame pump).
@@ -482,7 +659,7 @@ index f73ac81..c90d211 100644
      /// Run intercept logic for a replayed request and return it ready to forward.
      ///
      /// Unlike [`HttpHandler::handle_request`], this takes an already-captured
-@@ -414,11 +455,14 @@ impl CapturingHandler {
+@@ -414,11 +462,14 @@ impl CapturingHandler {
                  let rx = cfg.register(id);
                  if self
                      .event_tx
@@ -501,7 +678,7 @@ index f73ac81..c90d211 100644
                  {
                      cfg.resolve(id, InterceptDecision::Forward);
                      tracing::warn!("Event channel full, skipping intercept for replay id={id}");
-@@ -509,16 +553,51 @@ impl CapturingHandler {
+@@ -509,16 +560,51 @@ impl CapturingHandler {
          B: HttpBody<Data = Bytes, Error = hyper::Error> + Send + Sync + Unpin + 'static,
      {
          let (parts, body) = res.into_parts();
@@ -555,7 +732,7 @@ index f73ac81..c90d211 100644
              }
          }
      }
-@@ -536,11 +615,12 @@ impl CapturingHandler {
+@@ -536,36 +622,104 @@ impl CapturingHandler {
          }
      }
  
@@ -567,9 +744,12 @@ index f73ac81..c90d211 100644
      ) -> Response<ProxyBody> {
 +        let (parts, body_bytes) = self.apply_content_filter(parts, body_bytes).await;
          let hooked = self.apply_response_hook_to_snapshot(parts, body_bytes);
-         let HookedResponse { parts, body } = hooked;
+-        let HookedResponse { parts, body } = hooked;
++        let HookedResponse { mut parts, body } = hooked;
          let body_bytes = body.into_bytes();
-@@ -549,12 +629,13 @@ impl CapturingHandler {
++        ensure_content_length(&mut parts, body_bytes.len());
+         self.emit_response_snapshot(&parts, body_bytes.clone());
+ 
          Response::from_parts(parts, body::full(body_bytes))
      }
  
@@ -584,7 +764,13 @@ index f73ac81..c90d211 100644
          let hooked = self.apply_response_hook_to_snapshot(parts, captured);
          if hooked.body.is_original() {
              self.stream_response(hooked.parts, body)
-@@ -566,6 +647,70 @@ impl CapturingHandler {
+         } else {
+-            let HookedResponse { parts, body } = hooked;
++            let HookedResponse { mut parts, body } = hooked;
+             let body_bytes = body.into_bytes();
++            ensure_content_length(&mut parts, body_bytes.len());
+             self.emit_response_snapshot(&parts, body_bytes.clone());
+             Response::from_parts(parts, body::full(body_bytes))
          }
      }
  
@@ -655,7 +841,7 @@ index f73ac81..c90d211 100644
      fn emit_captured_response(&mut self, parts: http::response::Parts, body_bytes: Bytes) {
          let hooked = self.apply_response_hook_to_snapshot(parts, body_bytes);
          let HookedResponse { parts, body } = hooked;
-@@ -845,7 +990,11 @@ impl HttpHandler for CapturingHandler {
+@@ -845,7 +999,11 @@ impl HttpHandler for CapturingHandler {
                  };
                  // Non-blocking send: if the channel is full, skip interception
                  // and fall through to normal forwarding so the request isn't lost.
@@ -668,7 +854,57 @@ index f73ac81..c90d211 100644
                      cfg.resolve(id, InterceptDecision::Forward);
                      tracing::warn!("Event channel full, skipping intercept for id={id}");
                  } else {
-@@ -938,7 +1087,7 @@ mod tests {
+@@ -935,10 +1093,57 @@ mod tests {
+         response.into_body().collect().await.unwrap().to_bytes()
+     }
+ 
++    #[test]
++    fn http2_without_content_length_is_buffered_not_streaming() {
++        let (mut parts, _) = Response::builder()
++            .status(StatusCode::OK)
++            .body(())
++            .unwrap()
++            .into_parts();
++        parts.version = Version::HTTP_2;
++        assert!(!is_streaming_response(&parts));
++    }
++
++    #[test]
++    fn http2_sse_is_streaming() {
++        let (mut parts, _) = Response::builder()
++            .status(StatusCode::OK)
++            .body(())
++            .unwrap()
++            .into_parts();
++        parts.version = Version::HTTP_2;
++        parts.headers.insert(
++            http::header::CONTENT_TYPE,
++            "text/event-stream".parse().unwrap(),
++        );
++        assert!(is_streaming_response(&parts));
++    }
++
++    #[test]
++    fn http11_without_content_length_is_buffered_not_streaming() {
++        let (parts, _) = Response::builder()
++            .status(StatusCode::OK)
++            .body(())
++            .unwrap()
++            .into_parts();
++        assert!(!is_streaming_response(&parts));
++    }
++
++    #[test]
++    fn http11_chunked_is_buffered_not_streaming() {
++        let (parts, _) = Response::builder()
++            .status(StatusCode::OK)
++            .header(http::header::TRANSFER_ENCODING, "chunked")
++            .body(())
++            .unwrap()
++            .into_parts();
++        assert!(!is_streaming_response(&parts));
++    }
++
      #[test]
      fn debug_does_not_expose_large_captured_request() {
          let (event_tx, _event_rx) = mpsc::channel(1);
@@ -677,7 +913,7 @@ index f73ac81..c90d211 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let debug = format!("{handler:?}");
-@@ -955,7 +1104,7 @@ mod tests {
+@@ -955,7 +1160,7 @@ mod tests {
      #[tokio::test]
      async fn finish_buffered_response_uses_pending_id_and_rebuilds_response_body() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -686,7 +922,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(77);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -967,7 +1116,7 @@ mod tests {
+@@ -967,7 +1172,7 @@ mod tests {
              .into_parts();
          parts.version = Version::HTTP_11;
  
@@ -695,7 +931,7 @@ index f73ac81..c90d211 100644
  
          assert_eq!(body_bytes(response).await.as_ref(), b"accepted");
          match event_rx.recv().await.unwrap() {
-@@ -989,14 +1138,14 @@ mod tests {
+@@ -989,14 +1194,14 @@ mod tests {
      #[tokio::test]
      async fn finish_buffered_response_without_captured_request_sends_no_event() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -712,7 +948,7 @@ index f73ac81..c90d211 100644
  
          assert!(body_bytes(response).await.is_empty());
          assert!(event_rx.try_recv().is_err());
-@@ -1005,7 +1154,7 @@ mod tests {
+@@ -1005,7 +1210,7 @@ mod tests {
      #[tokio::test]
      async fn synthetic_response_returns_body_and_emits_completion() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -721,7 +957,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(78);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1039,7 +1188,7 @@ mod tests {
+@@ -1039,7 +1244,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_forwards_full_body_and_emits_capped_snapshots() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -730,7 +966,7 @@ index f73ac81..c90d211 100644
          handler.body_capture_limit = Some(4);
          handler.pending_id = Some(88);
  
-@@ -1085,7 +1234,7 @@ mod tests {
+@@ -1085,7 +1290,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_emits_partial_capture_when_body_is_dropped() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -739,7 +975,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(90);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1117,7 +1266,7 @@ mod tests {
+@@ -1117,7 +1322,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_emits_for_already_empty_body() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -748,7 +984,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(89);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1148,7 +1297,7 @@ mod tests {
+@@ -1148,7 +1353,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_waits_for_streaming_request_capture_before_empty_response_event() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -757,7 +993,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(91);
  
          let (req_parts, _) = Request::builder()
-@@ -1223,7 +1372,7 @@ mod tests {
+@@ -1223,7 +1428,7 @@ mod tests {
      #[tokio::test]
      async fn handle_replayed_request_forwards_without_intercept() {
          let (event_tx, _event_rx) = mpsc::channel(1);
@@ -766,7 +1002,7 @@ index f73ac81..c90d211 100644
  
          let request = handler
              .handle_replayed_request(proxied_request())
-@@ -1245,7 +1394,7 @@ mod tests {
+@@ -1245,7 +1450,7 @@ mod tests {
      #[test]
      fn take_pending_id_and_event_sender_clone_return_internal_state() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -775,7 +1011,7 @@ index f73ac81..c90d211 100644
          handler.pending_id = Some(123);
  
          assert_eq!(handler.take_pending_id(), Some(123));
-@@ -1268,7 +1417,7 @@ mod tests {
+@@ -1268,7 +1473,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -784,7 +1020,7 @@ index f73ac81..c90d211 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1306,7 +1455,7 @@ mod tests {
+@@ -1306,7 +1511,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -793,7 +1029,7 @@ index f73ac81..c90d211 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1335,7 +1484,7 @@ mod tests {
+@@ -1335,7 +1540,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -802,7 +1038,7 @@ index f73ac81..c90d211 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1376,7 +1525,7 @@ mod tests {
+@@ -1376,7 +1581,7 @@ mod tests {
              .unwrap();
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -811,7 +1047,7 @@ index f73ac81..c90d211 100644
  
          let request = handler
              .handle_replayed_request(proxied_request())
-@@ -1393,7 +1542,7 @@ mod tests {
+@@ -1393,7 +1598,7 @@ mod tests {
      #[tokio::test]
      async fn send_event_drops_full_or_closed_channels_without_panicking() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -820,7 +1056,7 @@ index f73ac81..c90d211 100644
          handler.send_event(ProxyEvent::Error {
              message: "first".to_owned(),
          });
-@@ -1430,7 +1579,7 @@ mod tests {
+@@ -1430,7 +1635,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -829,7 +1065,7 @@ index f73ac81..c90d211 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let (parts, _) = Response::builder()
-@@ -1439,7 +1588,7 @@ mod tests {
+@@ -1439,7 +1644,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -838,7 +1074,7 @@ index f73ac81..c90d211 100644
  
          assert_eq!(response.status(), StatusCode::CREATED);
          assert_eq!(response.headers()["x-script"], "yes");
-@@ -1473,7 +1622,7 @@ mod tests {
+@@ -1473,7 +1678,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, _event_rx) = mpsc::channel(1);
@@ -847,7 +1083,7 @@ index f73ac81..c90d211 100644
  
          let (parts, _) = Response::builder()
              .status(StatusCode::OK)
-@@ -1481,7 +1630,7 @@ mod tests {
+@@ -1481,7 +1686,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -856,7 +1092,7 @@ index f73ac81..c90d211 100644
  
          assert_eq!(response.status(), StatusCode::OK);
          assert_eq!(body_bytes(response).await.as_ref(), b"original");
-@@ -1506,7 +1655,7 @@ mod tests {
+@@ -1506,7 +1711,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -865,7 +1101,7 @@ index f73ac81..c90d211 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let (parts, _) = Response::builder()
-@@ -1516,7 +1665,7 @@ mod tests {
+@@ -1516,7 +1721,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -897,10 +1133,18 @@ index 431cbc7..9f95ab3 100644
  pub use event::ProxyEvent;
  pub use handler::{CapturingHandler, DEFAULT_BODY_CAPTURE_LIMIT};
 diff --git a/src/proxy/forward.rs b/src/proxy/forward.rs
-index 23cea08..e0994c9 100644
+index 23cea08..2fd981f 100644
 --- a/src/proxy/forward.rs
 +++ b/src/proxy/forward.rs
-@@ -17,6 +17,7 @@ use proxyapi_models::{ProxiedRequest, ProxiedResponse, WsDirection, WsFrame, WsO
+@@ -7,6 +7,7 @@ use http::uri::{Authority, Scheme};
+ use hyper::service::service_fn;
+ use hyper::{Method, Request, Response, Uri};
+ use hyper_util::rt::TokioIo;
++use hyper_util::server::conn::auto::upgrade as auto_upgrade;
+ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+ use tokio::net::TcpStream;
+ use tokio::sync::mpsc;
+@@ -17,6 +18,7 @@ use proxyapi_models::{ProxiedRequest, ProxiedResponse, WsDirection, WsFrame, WsO
  
  use crate::body::{self, ProxyBody};
  use crate::ca::{cert_server, CertificateAuthority, Ssl};
@@ -908,18 +1152,502 @@ index 23cea08..e0994c9 100644
  use crate::event::ProxyEvent;
  use crate::handler::{now_millis, CapturingHandler};
  use crate::rewind::Rewind;
-@@ -175,7 +176,9 @@ fn process_connect(
-                         }
+@@ -24,7 +26,8 @@ use crate::{HttpContext, HttpHandler, RequestOrResponse};
+ 
+ use super::{
+     is_benign_shutdown_error, prepare_upstream_request, prepare_upstream_upgrade_request,
+-    sanitize_response_for_client, serve_auto_connection, BoxError, Client,
++    sanitize_response_for_client, serve_auto_connection, serve_tls_mitm_connection, BoxError,
++    UpstreamClients,
+ };
+ 
+ /// HTTP/2 prior-knowledge connection preface.
+@@ -82,7 +85,7 @@ pub async fn handle_connection(
+     remote_addr: SocketAddr,
+     handler: CapturingHandler,
+     ca: Arc<Ssl>,
+-    client: Arc<Client>,
++    client: Arc<UpstreamClients>,
+     listen_addr: SocketAddr,
+ ) {
+     let io = TokioIo::new(stream);
+@@ -130,7 +133,7 @@ fn process_connect(
+     req: Request<hyper::body::Incoming>,
+     handler: CapturingHandler,
+     ca: Arc<Ssl>,
+-    client: Arc<Client>,
++    client: Arc<UpstreamClients>,
+     remote_addr: SocketAddr,
+     listen_addr: SocketAddr,
+ ) -> Result<Response<ProxyBody>, hyper::Error> {
+@@ -147,90 +150,44 @@ fn process_connect(
+     tokio::spawn(async move {
+         match hyper::upgrade::on(req).await {
+             Ok(upgraded) => {
+-                let mut upgraded = TokioIo::new(upgraded);
+-                let (protocol, buffered) = match sniff_stream_protocol(&mut upgraded).await {
+-                    Ok(result) => result,
+-                    Err(e) => {
+-                        tracing::error!("Failed to read from upgraded connection: {e}");
+-                        return;
+-                    }
+-                };
+-
+-                let upgraded = Rewind::new_buffered(upgraded, buffered.clone());
+-
+-                match protocol {
+-                    StreamProtocol::Http => {
+-                        if let Err(e) = serve_stream(
+-                            upgraded,
+-                            Scheme::HTTP,
++                match auto_upgrade::downcast::<TokioIo<TcpStream>>(upgraded) {
++                    Ok(parts) => {
++                        serve_connect_tunnel_tcp(
++                            parts.io.into_inner(),
++                            parts.read_buf,
++                            authority,
+                             handler,
+                             ca,
+                             client,
+                             remote_addr,
+                             listen_addr,
+                         )
+-                        .await
+-                        {
+-                            tracing::debug!("HTTP connect error: {e}");
+-                        }
++                        .await;
                      }
-                     StreamProtocol::Tls => {
+-                    StreamProtocol::Tls => {
 -                        let server_config = match ca.gen_server_config(&authority).await {
-+                        let cert_authority =
-+                            mitm_cert_authority(&authority, buffered.as_ref());
-+                        let server_config = match ca.gen_server_config(&cert_authority).await {
-                             Ok(cfg) => cfg,
-                             Err(e) => {
-                                 tracing::error!(
-@@ -367,8 +370,16 @@ fn upgrade_websocket_response(
+-                            Ok(cfg) => cfg,
+-                            Err(e) => {
+-                                tracing::error!(
+-                                    "Failed to generate server config for {authority}: {e}"
+-                                );
+-                                return;
+-                            }
+-                        };
+-                        let stream = match TlsAcceptor::from(server_config).accept(upgraded).await {
+-                            Ok(stream) => stream,
+-                            Err(e) => {
+-                                tracing::debug!("Failed to establish TLS connection: {e}");
+-                                return;
+-                            }
+-                        };
+-
+-                        if let Err(e) = serve_stream(
+-                            stream,
+-                            Scheme::HTTPS,
++                    Err(upgraded) => {
++                        let mut upgraded = TokioIo::new(upgraded);
++                        let (protocol, buffered) =
++                            match sniff_stream_protocol(&mut upgraded).await {
++                                Ok(result) => result,
++                                Err(e) => {
++                                    tracing::error!(
++                                        "Failed to read from upgraded connection: {e}"
++                                    );
++                                    return;
++                                }
++                            };
++                        serve_connect_tunnel_with_protocol(
++                            Rewind::new_buffered(upgraded, buffered.clone()),
++                            authority,
+                             handler,
+                             ca,
+                             client,
+                             remote_addr,
+                             listen_addr,
++                            protocol,
++                            buffered,
+                         )
+-                        .await
+-                        {
+-                            if !is_benign_shutdown_error(&*e) {
+-                                tracing::warn!("HTTPS connect error for {authority}: {e}");
+-                            }
+-                        }
+-                    }
+-                    StreamProtocol::Unknown => {
+-                        tracing::debug!(
+-                            "Unknown protocol, read '{:02X?}' from upgraded connection",
+-                            buffered.as_ref()
+-                        );
+-
+-                        let authority_str = authority.as_str();
+-                        let mut server = match TcpStream::connect(authority_str).await {
+-                            Ok(server) => server,
+-                            Err(e) => {
+-                                tracing::debug!("Failed to connect to {authority_str}: {e}");
+-                                return;
+-                            }
+-                        };
+-
+-                        let mut upgraded = upgraded;
+-                        if let Err(e) =
+-                            tokio::io::copy_bidirectional(&mut upgraded, &mut server).await
+-                        {
+-                            tracing::debug!(
+-                                "Failed to tunnel unknown protocol to {authority_str}: {e}"
+-                            );
+-                        }
++                        .await;
+                     }
+                 }
+             }
+@@ -241,16 +198,252 @@ fn process_connect(
+     Ok(Response::new(body::empty()))
+ }
+ 
+-/// Serve HTTP requests over an already-established stream (plain or TLS).
++/// CONNECT tunnel on a bare `TcpStream` (from auto upgrade downcast).
+ ///
+-/// Each request is passed through the [`CapturingHandler`] for inspection before
+-/// being forwarded to the upstream server via `client`.
++/// Peeks the first bytes without consuming them so TLS can be accepted on the
++/// bare socket (`TlsStream<TcpStream>`), which is required for HTTP/2 MITM.
++async fn serve_connect_tunnel_tcp(
++    tcp: TcpStream,
++    prefix: Bytes,
++    authority: Authority,
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++) {
++    if !prefix.is_empty() {
++        let mut tunnel = Rewind::new_buffered(tcp, prefix);
++        let (protocol, buffered) = match sniff_stream_protocol(&mut tunnel).await {
++            Ok(result) => result,
++            Err(e) => {
++                tracing::error!("Failed to read from upgraded connection: {e}");
++                return;
++            }
++        };
++        serve_connect_tunnel_with_protocol(
++            Rewind::new_buffered(tunnel.into_inner(), buffered.clone()),
++            authority,
++            handler,
++            ca,
++            client,
++            remote_addr,
++            listen_addr,
++            protocol,
++            buffered,
++        )
++        .await;
++        return;
++    }
++
++    let (protocol, peeked) = match peek_connect_protocol(&tcp).await {
++        Ok(result) => result,
++        Err(e) => {
++            tracing::error!("Failed to peek CONNECT tunnel: {e}");
++            return;
++        }
++    };
++
++    match protocol {
++        StreamProtocol::Tls => {
++            serve_tls_tunnel_tcp(
++                tcp,
++                authority,
++                peeked,
++                handler,
++                ca,
++                client,
++                remote_addr,
++                listen_addr,
++            )
++            .await;
++        }
++        StreamProtocol::Http => {
++            if let Err(e) = serve_stream(
++                tcp,
++                Scheme::HTTP,
++                handler,
++                ca,
++                client,
++                remote_addr,
++                listen_addr,
++            )
++            .await
++            {
++                tracing::debug!("HTTP connect error: {e}");
++            }
++        }
++        StreamProtocol::Unknown => {
++            serve_connect_tunnel_with_protocol(
++                Rewind::new_buffered(tcp, peeked.clone()),
++                authority,
++                handler,
++                ca,
++                client,
++                remote_addr,
++                listen_addr,
++                protocol,
++                peeked,
++            )
++            .await;
++        }
++    }
++}
++
++async fn serve_tls_tunnel_tcp(
++    tcp: TcpStream,
++    connect_authority: Authority,
++    client_hello: Bytes,
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++) {
++    let cert_authority = mitm_cert_authority(&connect_authority, client_hello.as_ref());
++    let server_config = match ca.gen_server_config(&cert_authority).await {
++        Ok(cfg) => cfg,
++        Err(e) => {
++            tracing::error!("Failed to generate server config for {connect_authority}: {e}");
++            return;
++        }
++    };
++    let stream = match TlsAcceptor::from(server_config).accept(tcp).await {
++        Ok(stream) => stream,
++        Err(e) => {
++            tracing::debug!("Failed to establish TLS connection: {e}");
++            return;
++        }
++    };
++    if let Err(e) = serve_tls_stream(
++        stream,
++        handler,
++        ca,
++        client,
++        remote_addr,
++        listen_addr,
++    )
++    .await
++    {
++        if !is_benign_shutdown_error(&*e) {
++            tracing::warn!("HTTPS connect error for {connect_authority}: {e}");
++        }
++    }
++}
++
++async fn serve_connect_tunnel_with_protocol<I>(
++    tunnel: Rewind<I>,
++    authority: Authority,
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++    protocol: StreamProtocol,
++    buffered: Bytes,
++) where
++    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++{
++    match protocol {
++        StreamProtocol::Http => {
++            if let Err(e) = serve_stream(
++                tunnel,
++                Scheme::HTTP,
++                handler,
++                ca,
++                client,
++                remote_addr,
++                listen_addr,
++            )
++            .await
++            {
++                tracing::debug!("HTTP connect error: {e}");
++            }
++        }
++        StreamProtocol::Tls => {
++            let cert_authority = mitm_cert_authority(&authority, buffered.as_ref());
++            let server_config = match ca.gen_server_config(&cert_authority).await {
++                Ok(cfg) => cfg,
++                Err(e) => {
++                    tracing::error!("Failed to generate server config for {authority}: {e}");
++                    return;
++                }
++            };
++            let stream = match TlsAcceptor::from(server_config).accept(tunnel).await {
++                Ok(stream) => stream,
++                Err(e) => {
++                    tracing::debug!("Failed to establish TLS connection: {e}");
++                    return;
++                }
++            };
++
++            if let Err(e) = serve_tls_stream(
++                stream,
++                handler,
++                ca,
++                client,
++                remote_addr,
++                listen_addr,
++            )
++            .await
++            {
++                if !is_benign_shutdown_error(&*e) {
++                    tracing::warn!("HTTPS connect error for {authority}: {e}");
++                }
++            }
++        }
++        StreamProtocol::Unknown => {
++            tracing::debug!(
++                "Unknown protocol, read '{:02X?}' from upgraded connection",
++                buffered.as_ref()
++            );
++
++            let authority_str = authority.as_str();
++            let mut server = match TcpStream::connect(authority_str).await {
++                Ok(server) => server,
++                Err(e) => {
++                    tracing::debug!("Failed to connect to {authority_str}: {e}");
++                    return;
++                }
++            };
++
++            let mut tunnel = tunnel;
++            if let Err(e) = tokio::io::copy_bidirectional(&mut tunnel, &mut server).await {
++                tracing::debug!("Failed to tunnel unknown protocol to {authority_str}: {e}");
++            }
++        }
++    }
++}
++
++async fn handle_tunnel_request(
++    req: Request<hyper::body::Incoming>,
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++    scheme: Scheme,
++) -> Result<Response<ProxyBody>, hyper::Error> {
++    let req = match reconstruct_tunnel_uri(req, scheme) {
++        Ok(req) => req,
++        Err(e) => return Ok(e.into_response()),
++    };
++
++    if cert_server::is_cert_request(&req) {
++        let resp = cert_server::handle(&req, &ca.ca_cert_pem(), Some(listen_addr));
++        return Ok(resp);
++    }
++
++    forward_http_request(req, handler, client, remote_addr).await
++}
++
++/// Serve HTTP requests over a cleartext CONNECT tunnel (HTTP/1.1 or h2c).
+ async fn serve_stream<I>(
+     stream: I,
+     scheme: Scheme,
+     handler: CapturingHandler,
+     ca: Arc<Ssl>,
+-    client: Arc<Client>,
++    client: Arc<UpstreamClients>,
+     remote_addr: SocketAddr,
+     listen_addr: SocketAddr,
+ ) -> Result<(), BoxError>
+@@ -258,36 +451,62 @@ where
+     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+ {
+     let io = TokioIo::new(stream);
++    let service = tunnel_service(handler, ca, client, remote_addr, listen_addr, scheme);
++    serve_auto_connection(io, service).await
++}
++
++/// Serve HTTP requests over a TLS-terminated MITM stream (ALPN h2 or http/1.1).
++async fn serve_tls_stream<I>(
++    stream: tokio_rustls::server::TlsStream<I>,
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++) -> Result<(), BoxError>
++where
++    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
++{
++    let service = tunnel_service(
++        handler,
++        ca,
++        client,
++        remote_addr,
++        listen_addr,
++        Scheme::HTTPS,
++    );
+ 
+-    let service = service_fn(move |mut req: Request<hyper::body::Incoming>| {
++    serve_tls_mitm_connection(stream, service).await
++}
++
++fn tunnel_service(
++    handler: CapturingHandler,
++    ca: Arc<Ssl>,
++    client: Arc<UpstreamClients>,
++    remote_addr: SocketAddr,
++    listen_addr: SocketAddr,
++    scheme: Scheme,
++) -> impl hyper::service::Service<
++    Request<hyper::body::Incoming>,
++    Response = Response<ProxyBody>,
++    Error = hyper::Error,
++    Future = impl std::future::Future<Output = Result<Response<ProxyBody>, hyper::Error>>,
++> + Clone {
++    service_fn(move |req| {
+         let handler = handler.clone();
+         let ca = Arc::clone(&ca);
+         let client = Arc::clone(&client);
+         let scheme = scheme.clone();
+-
+         async move {
+-            req = match reconstruct_tunnel_uri(req, scheme) {
+-                Ok(req) => req,
+-                Err(e) => return Ok(e.into_response()),
+-            };
+-
+-            // Check for proxel.ar cert request (inside CONNECT tunnel)
+-            if cert_server::is_cert_request(&req) {
+-                let resp = cert_server::handle(&req, &ca.ca_cert_pem(), Some(listen_addr));
+-                return Ok::<_, hyper::Error>(resp);
+-            }
+-
+-            forward_http_request(req, handler, client, remote_addr).await
++            handle_tunnel_request(req, handler, ca, client, remote_addr, listen_addr, scheme).await
+         }
+-    });
+-
+-    serve_auto_connection(io, service).await
++    })
+ }
+ 
+ async fn forward_http_request(
+     mut req: Request<hyper::body::Incoming>,
+     mut handler: CapturingHandler,
+-    client: Arc<Client>,
++    clients: Arc<UpstreamClients>,
+     remote_addr: SocketAddr,
+ ) -> Result<Response<ProxyBody>, hyper::Error> {
+     let client_version = req.version();
+@@ -315,7 +534,11 @@ async fn forward_http_request(
+         prepare_upstream_request(req)
+     };
+ 
+-    match client.request(upstream_req).await {
++    match clients
++        .for_version(client_version)
++        .request(upstream_req)
++        .await
++    {
+         Ok(res) => {
+             if is_ws && res.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+                 return Ok(upgrade_websocket_response(res, handler, client_on_upgrade));
+@@ -367,8 +590,16 @@ fn upgrade_websocket_response(
  
      if let Some(client_fut) = client_on_upgrade {
          let event_tx = handler.event_tx_clone();
@@ -937,12 +1665,33 @@ index 23cea08..e0994c9 100644
          });
      }
  
-@@ -426,11 +437,14 @@ impl TunnelRequestError {
+@@ -426,23 +657,66 @@ impl TunnelRequestError {
      }
  }
  
 +/// Maximum bytes to peek when classifying a CONNECT tunnel (full TLS ClientHello record).
 +const MAX_CONNECT_PEEK: usize = 4096;
++
++async fn peek_connect_protocol(tcp: &TcpStream) -> std::io::Result<(StreamProtocol, Bytes)> {
++    let mut buffer = [0u8; MAX_CONNECT_PEEK];
++    let mut idle_reads = 0u32;
++    const MAX_IDLE_READS: u32 = 200;
++
++    loop {
++        let filled = tcp.peek(&mut buffer).await?;
++        if filled > 0 {
++            let peeked = Bytes::copy_from_slice(&buffer[..filled]);
++            return Ok((classify_buffered_protocol(&peeked), peeked));
++        }
++        if idle_reads >= MAX_IDLE_READS {
++            break;
++        }
++        idle_reads += 1;
++        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++    }
++
++    Ok((StreamProtocol::Http, Bytes::new()))
++}
 +
  async fn sniff_stream_protocol<I>(stream: &mut I) -> std::io::Result<(StreamProtocol, Bytes)>
  where
@@ -951,9 +1700,22 @@ index 23cea08..e0994c9 100644
 -    let mut buffer = [0u8; H2_PREFACE.len()];
 +    let mut buffer = [0u8; MAX_CONNECT_PEEK];
      let mut filled = 0;
++    let mut idle_reads = 0u32;
++    const MAX_IDLE_READS: u32 = 200;
  
      loop {
-@@ -443,6 +457,17 @@ where
+         let bytes_read = stream.read(&mut buffer[filled..]).await?;
+         if bytes_read == 0 {
++            if filled == 0 && idle_reads < MAX_IDLE_READS {
++                idle_reads += 1;
++                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++                continue;
++            }
+             break;
+         }
++        idle_reads = 0;
+ 
+         filled += bytes_read;
          let prefix = &buffer[..filled];
  
          if is_tls_handshake(prefix) {
@@ -971,7 +1733,19 @@ index 23cea08..e0994c9 100644
              return Ok((StreamProtocol::Tls, Bytes::copy_from_slice(prefix)));
          }
          if is_h2_preface(prefix) || is_http1_request(prefix) {
-@@ -475,6 +500,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
+@@ -462,6 +736,11 @@ where
+ }
+ 
+ fn classify_buffered_protocol(buffered: &[u8]) -> StreamProtocol {
++    if buffered.is_empty() {
++        // Default to MITM HTTP handling so cleartext HTTP/2 clients can send
++        // PRI * after CONNECT without falling through to a raw TCP tunnel.
++        return StreamProtocol::Http;
++    }
+     if is_tls_handshake(buffered) {
+         StreamProtocol::Tls
+     } else if is_h2_preface(buffered) || is_http1_request(buffered) {
+@@ -475,6 +754,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
      buffered.len() >= 2 && buffered[0] == TLS_RECORD_HANDSHAKE && buffered[1] == TLS_VERSION_MAJOR
  }
  
@@ -1069,7 +1843,7 @@ index 23cea08..e0994c9 100644
  fn is_h2_preface(buffered: &[u8]) -> bool {
      buffered == H2_PREFACE
  }
-@@ -507,7 +623,8 @@ async fn pump_websocket_frames(
+@@ -507,7 +877,8 @@ async fn pump_websocket_frames(
      conn_id: u64,
      client_on_upgrade: hyper::upgrade::OnUpgrade,
      server_on_upgrade: hyper::upgrade::OnUpgrade,
@@ -1079,7 +1853,7 @@ index 23cea08..e0994c9 100644
  ) {
      let (client_upgraded, server_upgraded) =
          match tokio::try_join!(client_on_upgrade, server_on_upgrade) {
-@@ -548,6 +665,14 @@ async fn pump_websocket_frames(
+@@ -548,6 +919,14 @@ async fn pump_websocket_frames(
              },
              msg = server_ws.next() => match msg {
                  Some(Ok(frame)) => {
@@ -1094,7 +1868,7 @@ index 23cea08..e0994c9 100644
                      emit_ws_frame(&event_tx, conn_id, &frame, WsDirection::ServerToClient);
                      if client_ws.send(frame).await.is_err() { break; }
                  }
-@@ -560,12 +685,37 @@ async fn pump_websocket_frames(
+@@ -560,12 +939,37 @@ async fn pump_websocket_frames(
          }
      }
  
@@ -1134,7 +1908,7 @@ index 23cea08..e0994c9 100644
      conn_id: u64,
      msg: &Message,
      direction: WsDirection,
-@@ -582,10 +732,12 @@ fn emit_ws_frame(
+@@ -582,10 +986,12 @@ fn emit_ws_frame(
      let limit = MAX_WS_FRAME_PAYLOAD.unwrap_or(raw.len());
      let truncated = raw.len() > limit;
      let payload = Bytes::copy_from_slice(&raw[..raw.len().min(limit)]);
@@ -1151,19 +1925,53 @@ index 23cea08..e0994c9 100644
  }
  
  /// Send a previously captured request back through the proxy pipeline.
-@@ -669,7 +821,7 @@ mod tests {
+@@ -595,12 +1001,17 @@ fn emit_ws_frame(
+ pub(crate) async fn handle_replay(
+     req: ProxiedRequest,
+     mut handler: CapturingHandler,
+-    client: Arc<Client>,
++    clients: Arc<UpstreamClients>,
+ ) {
+     let Some(fwd_req) = handler.handle_replayed_request(req).await else {
+         return;
+     };
+-    match client.request(prepare_upstream_request(fwd_req)).await {
++    let version = fwd_req.version();
++    match clients
++        .for_version(version)
++        .request(prepare_upstream_request(fwd_req))
++        .await
++    {
+         Ok(res) => {
+             handler.record_upstream_response(res).await;
+         }
+@@ -669,7 +1080,12 @@ mod tests {
              req.headers().get_all(hyper::header::COOKIE).iter().count(),
              1
          );
 -        assert_eq!(req.version(), hyper::Version::HTTP_11);
 +        assert_eq!(req.version(), hyper::Version::HTTP_10);
++    }
++
++    #[test]
++    fn classify_buffered_protocol_empty_defaults_to_http_mitm() {
++        assert_eq!(classify_buffered_protocol(b""), StreamProtocol::Http);
      }
  
      #[test]
 diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
-index d0849f8..30eb586 100644
+index d0849f8..5e53286 100644
 --- a/src/proxy/mod.rs
 +++ b/src/proxy/mod.rs
+@@ -13,7 +13,7 @@ use hyper::rt::{Read, Write};
+ use hyper::service::Service;
+ use hyper::{HeaderMap, Request, Response, Uri};
+ use hyper_util::client::legacy::connect::HttpConnector;
+-use hyper_util::rt::TokioExecutor;
++use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+ use hyper_util::server::conn::auto;
+ use proxyapi_models::ProxiedRequest;
+ use tokio::net::TcpListener;
 @@ -21,6 +21,7 @@ use tokio::sync::mpsc;
  
  use crate::body::ProxyBody;
@@ -1172,7 +1980,100 @@ index d0849f8..30eb586 100644
  use crate::error::Error;
  use crate::event::ProxyEvent;
  use crate::handler::CapturingHandler;
-@@ -78,7 +79,6 @@ pub(crate) fn prepare_upstream_request(mut req: Request<ProxyBody>) -> Request<P
+@@ -35,6 +36,42 @@ pub(crate) type Client =
+     hyper_util::client::legacy::Client<hyper_rustls::HttpsConnector<HttpConnector>, ProxyBody>;
+ pub(crate) type BoxError = Box<dyn StdError + Send + Sync>;
+ 
++/// Upstream clients split by negotiated HTTP version (no ALPN upgrade on either leg).
++pub(crate) struct UpstreamClients {
++    http1: Client,
++    http2: Client,
++}
++
++impl UpstreamClients {
++    pub(crate) fn build(tls_config: rustls::ClientConfig) -> Self {
++        let http1_https = hyper_rustls::HttpsConnectorBuilder::new()
++            .with_tls_config(tls_config.clone())
++            .https_or_http()
++            .enable_http1()
++            .build();
++        let http2_https = hyper_rustls::HttpsConnectorBuilder::new()
++            .with_tls_config(tls_config)
++            .https_or_http()
++            .enable_http1()
++            .enable_http2()
++            .build();
++        Self {
++            http1: hyper_util::client::legacy::Client::builder(TokioExecutor::new())
++                .build(http1_https),
++            http2: hyper_util::client::legacy::Client::builder(TokioExecutor::new())
++                .build(http2_https),
++        }
++    }
++
++    pub(crate) fn for_version(&self, version: hyper::Version) -> &Client {
++        if version == hyper::Version::HTTP_2 {
++            &self.http2
++        } else {
++            &self.http1
++        }
++    }
++}
++
+ const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+ const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+ 
+@@ -68,6 +105,49 @@ where
+     builder.serve_connection_with_upgrades(io, service).await
+ }
+ 
++/// Serve a TLS-terminated MITM session (HTTP/2 or HTTP/1.1 via auto-detect).
++pub(crate) async fn serve_tls_mitm_connection<I, S, B>(
++    stream: tokio_rustls::server::TlsStream<I>,
++    service: S,
++) -> Result<(), BoxError>
++where
++    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
++    S: Service<Request<Incoming>, Response = Response<B>>,
++    S::Future: 'static,
++    S::Error: Into<BoxError>,
++    B: HttpBody + 'static,
++    B::Error: Into<BoxError>,
++    TokioExecutor: auto::HttpServerConnExec<S::Future, B>,
++{
++    let alpn = stream
++        .get_ref()
++        .1
++        .alpn_protocol()
++        .map(|protocol| protocol.to_vec());
++    let io = TokioIo::new(stream);
++
++    match alpn.as_deref() {
++        Some(b"h2") => {
++            let mut builder = auto::Builder::new(TokioExecutor::new());
++            builder.http2().timer(TokioTimer::new());
++            builder
++                .http2_only()
++                .serve_connection(io, service)
++                .into_owned()
++                .await
++        }
++        _ => {
++            hyper::server::conn::http1::Builder::new()
++                .preserve_header_case(true)
++                .title_case_headers(true)
++                .serve_connection(io, service)
++                .with_upgrades()
++                .await
++                .map_err(|e| Box::new(e) as BoxError)
++        }
++    }
++}
++
+ /// Prepare a captured request for the upstream HTTP/1.1 client.
+ ///
+ /// This centralizes the proxy's existing invariants and strips hop-by-hop
+@@ -78,7 +158,6 @@ pub(crate) fn prepare_upstream_request(mut req: Request<ProxyBody>) -> Request<P
      req.headers_mut().remove(PROXY_AUTHORIZATION);
      req.headers_mut().remove(TE);
      join_cookie_headers(req.headers_mut());
@@ -1180,7 +2081,7 @@ index d0849f8..30eb586 100644
      req
  }
  
-@@ -101,9 +101,21 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
+@@ -101,9 +180,22 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
      res.headers_mut().remove(TE);
  }
  
@@ -1190,6 +2091,7 @@ index d0849f8..30eb586 100644
 +}
 +
  pub(crate) fn sanitize_response_for_client<B>(res: &mut Response<B>, version: hyper::Version) {
++    *res.version_mut() = version;
      if version == hyper::Version::HTTP_2 {
          sanitize_response_for_http2(res);
 +    } else if version == hyper::Version::HTTP_11 && !is_protocol_upgrade_response(res) {
@@ -1202,7 +2104,7 @@ index d0849f8..30eb586 100644
      }
  }
  
-@@ -152,8 +164,10 @@ pub struct ProxyConfig {
+@@ -152,8 +244,10 @@ pub struct ProxyConfig {
      pub addr: SocketAddr,
      /// Forward or reverse proxy mode.
      pub mode: ProxyMode,
@@ -1215,15 +2117,24 @@ index d0849f8..30eb586 100644
      /// Directory for CA certificate and key files.
      pub ca_dir: PathBuf,
      /// Upstream HTTPS server trust policy.
-@@ -226,6 +240,7 @@ impl Proxy {
-             .with_tls_config(tls_config)
-             .https_or_http()
-             .enable_http1()
-+            .enable_http2()
-             .build();
+@@ -222,15 +316,7 @@ impl Proxy {
+         }
  
-         let client = Arc::new(
-@@ -251,6 +266,9 @@ impl Proxy {
+         let tls_config = tls::build_client_config(&self.config.upstream_tls)?;
+-        let https = hyper_rustls::HttpsConnectorBuilder::new()
+-            .with_tls_config(tls_config)
+-            .https_or_http()
+-            .enable_http1()
+-            .build();
+-
+-        let client = Arc::new(
+-            hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build(https),
+-        );
++        let client = Arc::new(UpstreamClients::build(tls_config));
+ 
+         let mut replay_rx = self.config.replay_rx;
+ 
+@@ -251,6 +337,9 @@ impl Proxy {
                      if let Some(ref ic) = self.config.intercept {
                          handler = handler.with_intercept(Arc::clone(ic));
                      }
@@ -1233,7 +2144,7 @@ index d0849f8..30eb586 100644
                      #[cfg(feature = "scripting")]
                      if let Some(ref engine) = script_engine {
                          handler = handler.with_script_engine(Arc::clone(engine));
-@@ -279,6 +297,9 @@ impl Proxy {
+@@ -279,6 +368,9 @@ impl Proxy {
                      if let Some(ref ic) = self.config.intercept {
                          handler = handler.with_intercept(Arc::clone(ic));
                      }
@@ -1243,7 +2154,7 @@ index d0849f8..30eb586 100644
                      #[cfg(feature = "scripting")]
                      if let Some(ref engine) = script_engine {
                          handler = handler.with_script_engine(Arc::clone(engine));
-@@ -334,7 +355,8 @@ mod tests {
+@@ -334,7 +426,8 @@ mod tests {
              mode: ProxyMode::Reverse {
                  target: "http://example.test".parse().unwrap(),
              },
@@ -1253,7 +2164,7 @@ index d0849f8..30eb586 100644
              ca_dir: PathBuf::from("."),
              upstream_tls: UpstreamTlsConfig::Default,
              intercept: None,
-@@ -400,7 +422,7 @@ mod tests {
+@@ -400,7 +493,7 @@ mod tests {
  
          let req = prepare_upstream_request(req);
  
@@ -1262,3 +2173,60 @@ index d0849f8..30eb586 100644
          assert!(!req.headers().contains_key(HOST));
          assert!(!req.headers().contains_key(CONNECTION));
          assert!(!req.headers().contains_key("x-remove"));
+diff --git a/src/proxy/reverse.rs b/src/proxy/reverse.rs
+index c98a4de..8134187 100644
+--- a/src/proxy/reverse.rs
++++ b/src/proxy/reverse.rs
+@@ -13,7 +13,7 @@ use crate::{HttpContext, HttpHandler, RequestOrResponse};
+ 
+ use super::{
+     is_benign_shutdown_error, prepare_upstream_request, sanitize_response_for_client,
+-    serve_auto_connection, Client,
++    serve_auto_connection, UpstreamClients,
+ };
+ 
+ pub async fn handle_connection(
+@@ -21,13 +21,13 @@ pub async fn handle_connection(
+     remote_addr: SocketAddr,
+     handler: CapturingHandler,
+     target: Uri,
+-    client: Arc<Client>,
++    clients: Arc<UpstreamClients>,
+ ) {
+     let io = TokioIo::new(stream);
+ 
+     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+         let mut handler = handler.clone();
+-        let client = Arc::clone(&client);
++        let clients = Arc::clone(&clients);
+         let target = target.clone();
+ 
+         async move {
+@@ -55,7 +55,11 @@ pub async fn handle_connection(
+                 }
+             };
+ 
+-            match client.request(prepare_upstream_request(req)).await {
++            match clients
++                .for_version(client_version)
++                .request(prepare_upstream_request(req))
++                .await
++            {
+                 Ok(res) => {
+                     let mut res = handler.handle_upstream_response(res).await;
+                     sanitize_response_for_client(&mut res, client_version);
+diff --git a/src/rewind.rs b/src/rewind.rs
+index 00505ad..c0621b1 100644
+--- a/src/rewind.rs
++++ b/src/rewind.rs
+@@ -19,6 +19,10 @@ impl<T> Rewind<T> {
+             inner: io,
+         }
+     }
++
++    pub(crate) fn into_inner(self) -> T {
++        self.inner
++    }
+ }
+ 
+ impl<T> AsyncRead for Rewind<T>

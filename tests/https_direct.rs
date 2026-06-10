@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     assert_child_success, assert_no_jsonl_stderr, require_network, run_guardian_direct_https,
-    run_guardian_with_options, spawn_tpf_mock, GuardianOptions,
+    run_guardian_with_options, GuardianOptions,
 };
 
 #[test]
@@ -24,7 +24,7 @@ fn direct_https_filtered_mitm_runs_child() {
         return;
     }
 
-    let mock = spawn_tpf_mock();
+    let mock = common::spawn_tpf_mock();
     let run = run_guardian_with_options(GuardianOptions {
         trypanophobe_filter: Some(mock.pass_url),
         url: Some(common::smoke_https_url()),

@@ -3,15 +3,12 @@ mod common;
 use std::fs;
 use std::io::Read;
 
-use common::{assert_child_success, assert_no_jsonl_stderr, require_network};
+use common::{assert_child_success, assert_no_jsonl_stderr, spawn_test_servers, TestServersConfig};
 use tempfile::TempDir;
 
 #[test]
 fn binary_post_passthrough_succeeds() {
-    if !require_network() {
-        return;
-    }
-
+    let servers = spawn_test_servers(TestServersConfig::default());
     let payload_dir = TempDir::new().expect("payload dir");
     let payload_path = payload_dir.path().join("payload.bin");
     let bytes: Vec<u8> = (0..=255).collect();
@@ -30,7 +27,7 @@ fn binary_post_passthrough_succeeds() {
         "POST".to_string(),
         "--data-binary".to_string(),
         format!("@{}", payload_path.display()),
-        "http://httpbingo.org/post".to_string(),
+        servers.http_post_url.clone(),
     ];
 
     let bin = common::guardian_bin();

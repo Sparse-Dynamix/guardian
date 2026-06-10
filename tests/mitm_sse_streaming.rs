@@ -3,19 +3,25 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    assert_child_success, run_guardian_with_options, spawn_sse_origin, spawn_tpf_mock,
-    spawn_tpf_mock_reject_body_containing, GuardianOptions,
+    assert_child_success, fetch_tpf_requests, run_guardian_with_options, spawn_test_servers,
+    GuardianOptions, TestServersConfig,
 };
 
 #[test]
 fn mitm_sse_streaming_passes_events_incrementally() {
-    let origin = spawn_sse_origin(&["alpha", "beta", "gamma"]);
-    let mock = spawn_tpf_mock();
-    let url = format!("{}/", origin.base_url);
+    let servers = spawn_test_servers(TestServersConfig {
+        sse_events: Some(vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ]),
+        ..TestServersConfig::default()
+    });
+    let url = format!("{}/", servers.sse_base_url);
 
     let run = run_guardian_with_options(GuardianOptions {
         url: Some(url),
-        trypanophobe_filter: Some(mock.pass_url),
+        trypanophobe_filter: Some(servers.pass_url.clone()),
         ..GuardianOptions::default()
     })
     .expect("spawn guardian");
@@ -25,7 +31,7 @@ fn mitm_sse_streaming_passes_events_incrementally() {
     assert!(run.stdout.contains("beta"), "stdout:\n{}", run.stdout);
     assert!(run.stdout.contains("gamma"), "stdout:\n{}", run.stdout);
 
-    let requests = mock.requests.lock().unwrap();
+    let requests = fetch_tpf_requests(&servers);
     assert!(
         requests.len() >= 3,
         "expected gated per-chunk TPF checks, got {} requests",
@@ -35,13 +41,20 @@ fn mitm_sse_streaming_passes_events_incrementally() {
 
 #[test]
 fn mitm_sse_streaming_blocks_on_rejected_chunk() {
-    let origin = spawn_sse_origin(&["safe", "BLOCKME", "after"]);
-    let mock = spawn_tpf_mock_reject_body_containing("BLOCKME");
-    let url = format!("{}/", origin.base_url);
+    let servers = spawn_test_servers(TestServersConfig {
+        sse_events: Some(vec![
+            "safe".to_string(),
+            "BLOCKME".to_string(),
+            "after".to_string(),
+        ]),
+        tpf_reject_needle: Some("BLOCKME".to_string()),
+        ..TestServersConfig::default()
+    });
+    let url = format!("{}/", servers.sse_base_url);
 
     let run = run_guardian_with_options(GuardianOptions {
         url: Some(url),
-        trypanophobe_filter: Some(mock.pass_url),
+        trypanophobe_filter: Some(servers.pass_url.clone()),
         ..GuardianOptions::default()
     })
     .expect("spawn guardian");
@@ -55,7 +68,7 @@ fn mitm_sse_streaming_blocks_on_rejected_chunk() {
     );
 
     std::thread::sleep(Duration::from_millis(100));
-    let requests = mock.requests.lock().unwrap();
+    let requests = fetch_tpf_requests(&servers);
     assert!(
         !requests.is_empty(),
         "expected at least one TPF chunk check before block"

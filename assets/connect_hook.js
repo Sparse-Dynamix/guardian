@@ -176,9 +176,9 @@ if (Process.platform === 'windows') {
     );
 }
 
-function ensureBlockingSocket(sockfd) {
+function setBlockingSocket(sockfd) {
     if (Process.platform === 'windows') {
-        return;
+        return null;
     }
     var fcntl = new NativeFunction(globalExport('fcntl'), 'int', ['int', 'int', 'int']);
     var F_GETFL = 3;
@@ -188,6 +188,16 @@ function ensureBlockingSocket(sockfd) {
     if (flags >= 0) {
         fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK);
     }
+    return flags;
+}
+
+function restoreSocketFlags(sockfd, flags) {
+    if (Process.platform === 'windows' || flags === null || flags < 0) {
+        return;
+    }
+    var fcntl = new NativeFunction(globalExport('fcntl'), 'int', ['int', 'int', 'int']);
+    var F_SETFL = 4;
+    fcntl(sockfd, F_SETFL, flags);
 }
 
 var recvCarry = {};
@@ -306,7 +316,7 @@ function hookConnect(connect_p, send_p, recv_p) {
                 return;
             }
             var sockfd = this.sockfd.toInt32();
-            ensureBlockingSocket(sockfd);
+            var originalFlags = setBlockingSocket(sockfd);
 
             var target = connectTarget(this.addrKey);
             var authority = formatConnectAuthority(target, this.port);
@@ -343,6 +353,7 @@ function hookConnect(connect_p, send_p, recv_p) {
                 attempts++;
             }
             Thread.sleep(0.05);
+            restoreSocketFlags(sockfd, originalFlags);
         }
     });
 }
