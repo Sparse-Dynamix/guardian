@@ -378,7 +378,6 @@ mod tests {
             block_message: crate::trypanophobe::DEFAULT_BLOCK_MESSAGE.to_string(),
             port_min: 1024,
             port_max: 65535,
-            proxy_event_channel_capacity: 100,
             proxy_ready_timeout_secs: 5,
             proxy_ready_poll_ms: 10,
             process_poll_interval_ms: 50,

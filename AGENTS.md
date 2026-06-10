@@ -27,7 +27,7 @@ flowchart TB
     subgraph layer1 [Layer 1 - Frida TCP hook]
         Connect[connect host:port]
         Redirect[Redirect to bind_ip:proxy_port]
-        SyntheticCONNECT["Send CONNECT host:port HTTP/1.0"]
+        SyntheticCONNECT["Send CONNECT host:port HTTP/1.1"]
     end
     subgraph layer2 [Layer 2 - Proxelar forward MITM]
         Forward[Accept CONNECT tunnel]
@@ -40,9 +40,9 @@ flowchart TB
     Forward --> TLS --> Filter
 ```
 
-**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (IPv4 and IPv6); redirect to `bind_ip:proxy_port` (IPv6 destinations use an IPv4-mapped proxy address `::ffff:bind_ip`); synthetic `CONNECT`. Default filter: TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules. Client ALPN is not modified — h2/http/1.1 negotiate as the client offers.
+**Layer 1** — hook `connect()` / `WSAConnect` for **TCP only** (IPv4 and IPv6); redirect to `bind_ip:proxy_port` (IPv6 destinations use an IPv4-mapped proxy address `::ffff:bind_ip`); synthetic `CONNECT host:port HTTP/1.1` with `Proxy-Connection: Keep-Alive`. Default filter: TCP except `ignored_ports`. `--filter` receives `host` from DNS resolution (`__guardianHostByIp`); use native JS regex on `host` for domain rules. Client ALPN is not modified — h2/http/1.1 negotiate as the client offers.
 
-**Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. Each leg negotiates HTTP version via ALPN (h2 or http/1.1) with no forced downgrade. Finite HTTP responses are buffered and checked once; streaming responses (`text/event-stream`, chunked, or no `Content-Length`) are gated per chunk/event (fail-closed: a chunk reaches the harness only after `--tpf` returns `200`). Server→client WS `Text`/`Binary` frames checked.
+**Layer 2** — `ProxyMode::Forward`, `content_filter: TrypanophobeClient`, `event_tx: None`. Each leg negotiates HTTP version via ALPN (h2 or http/1.1) with no forced downgrade. Finite HTTP responses (including chunked and bodies without `Content-Length`) are buffered and checked once. Only `text/event-stream` (SSE) is gated per event (fail-closed: an event reaches the harness only after `--tpf` returns `200`). Server→client WS `Text`/`Binary` frames checked.
 
 ## Startup lifecycle (MITM + `--tpf`)
 
@@ -67,8 +67,7 @@ guardian/
     proxy.rs          # Proxelar embed + ContentFilter
     injector.rs       # Frida
     ca.rs
-  patches/proxyapi+0.4.5.patch   # SNI cert, Connection: close, ContentFilter
-  patches/proxyapi-tps-swap.patch # FilterVerdict::Replace + header/body swap
+  patches/proxyapi+0.4.5.patch   # SNI cert, Connection: close, ContentFilter, TPS swap
   scripts/smoke/
     test-servers.ts      # consolidated local HTTP/HTTP2/SSE/IPv6 + TPF mock (smoke + integration tests)
     tpf-cases.ts

@@ -15,7 +15,6 @@ block_message = "Blocked by Guardian: content failed safety check"
 
 port_min = 1024
 port_max = 65535
-proxy_event_channel_capacity = 10000
 proxy_ready_timeout_secs = 5
 proxy_ready_poll_ms = 10
 process_poll_interval_ms = 50
