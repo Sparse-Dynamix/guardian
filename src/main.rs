@@ -1,5 +1,6 @@
 mod ca;
 mod child_exit;
+mod clean;
 mod cli;
 mod config;
 mod filter;
@@ -10,6 +11,7 @@ mod mkcert;
 mod notes;
 mod port;
 mod proxy;
+mod secure_file;
 mod signals;
 mod system_trust;
 #[cfg(test)]
@@ -22,11 +24,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use clap::Parser;
-use proxyapi::ca::Ssl;
-
-use crate::ca::CaTrust;
+use crate::ca::{load_or_generate_ca, CaTrust};
 use crate::cli::{Cli, Commands};
 use crate::config::{
     is_payload_mode, resolve_ca_dir, resolve_payload_settings, resolve_settings,
@@ -35,6 +33,8 @@ use crate::config::{
 use crate::injector::SpawnOutcome;
 use crate::system_trust::TrustStore;
 use crate::trypanophobe::run_payload;
+use anyhow::{bail, Context, Result};
+use clap::Parser;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -61,7 +61,7 @@ async fn run_mitm_filtered(settings: Settings) -> Result<i32> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut ca_trust = CaTrust::from_settings(&settings);
-    Ssl::load_or_generate(&settings.ca_dir).context("failed to load/generate Guardian CA")?;
+    load_or_generate_ca(&settings.ca_dir)?;
     ca_trust
         .ensure_artifacts(&settings)
         .context("failed to prepare CA trust artifacts")?;
@@ -193,6 +193,12 @@ async fn async_main() -> Result<i32> {
             } else {
                 Ok(1)
             }
+        }
+        Some(Commands::Clean(opts)) => {
+            let ca_dir = resolve_ca_dir(&cli)?;
+            let stores = TrustStore::parse_all(&resolve_trust_stores(&cli, Some(opts)));
+            clean::run_clean(&ca_dir, &stores)?;
+            Ok(0)
         }
         None => {
             validate_mode_exclusivity(&cli)?;

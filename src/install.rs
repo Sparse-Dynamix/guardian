@@ -1,12 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
-use privilege::user::privileged;
-use proxyapi::ca::Ssl;
-
+use crate::ca::load_or_generate_ca;
 use crate::mkcert;
 use crate::system_trust::TrustStore;
+use anyhow::{bail, Context, Result};
+use privilege::user::privileged;
 
 pub fn require_admin(action: &str) -> Result<()> {
     if privileged() {
@@ -28,7 +27,7 @@ pub fn run_install_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<()> {
     require_admin("Installing the Guardian CA system-wide")?;
     std::fs::create_dir_all(ca_dir)
         .with_context(|| format!("failed to create {}", ca_dir.display()))?;
-    Ssl::load_or_generate(ca_dir).context("failed to load/generate Guardian CA")?;
+    load_or_generate_ca(ca_dir)?;
     invoke_mkcert(ca_dir, stores, "-install")?;
     eprintln!("Guardian CA install finished (see mkcert output above for details)");
     Ok(())
@@ -47,7 +46,7 @@ pub fn run_remove_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<()> {
     Ok(())
 }
 
-fn invoke_mkcert(ca_dir: &Path, stores: &[TrustStore], flag: &str) -> Result<()> {
+pub(crate) fn invoke_mkcert(ca_dir: &Path, stores: &[TrustStore], flag: &str) -> Result<()> {
     let mkcert_path = mkcert::executable_path(ca_dir)?;
     let mut cmd = Command::new(&mkcert_path);
     cmd.env("CAROOT", ca_dir).arg(flag);

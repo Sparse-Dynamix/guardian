@@ -28,7 +28,7 @@ fn bind_or_error(bind_ip: IpAddr, port: u16, port_min: u16, port_max: u16) -> Re
 pub fn allocate_port_auto(bind_ip: IpAddr, port_min: u16, port_max: u16) -> Result<u16> {
     let v4 = match bind_ip {
         IpAddr::V4(v) => v,
-        IpAddr::V6(_) => bail!("IPv6 bind is not supported in v1"),
+        IpAddr::V6(_) => bail!("IPv6 bind is not supported in v1beta"),
     };
     let (_, port) = port_check::with_free_ipv4_port(|port| {
         if !(port_min..=port_max).contains(&port) {

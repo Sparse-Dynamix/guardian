@@ -9,6 +9,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use crate::config::Settings;
 
 pub const ROOT_CA_PEM: &str = "rootCA.pem";
+pub const ROOT_CA_KEY_PEM: &str = "rootCA-key.pem";
+
+pub fn load_or_generate_ca(ca_dir: &Path) -> Result<proxyapi::ca::Ssl> {
+    use proxyapi::ca::Ssl;
+    let ssl = Ssl::load_or_generate(ca_dir).context("failed to load/generate Guardian CA")?;
+    crate::secure_file::restrict_private_key(&ca_dir.join(ROOT_CA_KEY_PEM))?;
+    Ok(ssl)
+}
 
 /// PEM path env vars pointing at the combined CA bundle.
 const PEM_ENV_VARS: &[&str] = &[
@@ -579,5 +587,19 @@ mod tests {
             .iter()
             .any(|p| { p == "CURL_CA_BUNDLE=/tmp/guardian-ca/guardian-ca-bundle.pem" }));
         assert!(pairs.iter().any(|p| p == "NODE_OPTIONS=--use-openssl-ca"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_or_generate_ca_restricts_private_key() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        super::load_or_generate_ca(dir.path()).unwrap();
+        let key = dir.path().join(super::ROOT_CA_KEY_PEM);
+        let mode = fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

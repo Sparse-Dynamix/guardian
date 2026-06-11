@@ -73,7 +73,8 @@ Document subcommands (print to stdout): `legal-notes` ([NOTICE.txt](NOTICE.txt))
 | Command | Admin required | Purpose |
 |---------|----------------|---------|
 | `install-system` | Yes | Register the Guardian CA in OS / browser / Java trust stores |
-| `remove-system` | Yes | Remove the Guardian CA |
+| `remove-system` | Yes | Remove the Guardian CA from system trust stores |
+| `clean` | Partial | Delete local artifacts; system trust removal when run as administrator |
 | `check-system` | No | Report whether the CA is trusted |
 | `legal-notes` | No | Print legal notice and third-party attributions |
 | `license-notes` | No | Print GPL license text |

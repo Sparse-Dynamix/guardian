@@ -65,11 +65,8 @@ Full TLS decryption via a locally trusted root CA is **inherent to the MITM desi
 
 ### Planned / possible future changes
 
-- Stricter **private key permissions** and safer CA lifecycle handling.
-- Clearer **install/uninstall** UX and warnings at `install-system` time.
 - **Scoped or ephemeral** CAs instead of a long-lived machine-wide root.
 - **Per-harness** or **per-session** trust instead of system-wide registration.
-- Optional modes that **do not** require a custom root CA (e.g. payload-only hardening without MITM).
 
 ---
 
@@ -159,9 +156,10 @@ Without a child network stack, payload mode reads stdin or `--payload` and optio
 
 These items are related to the same trust boundary and are called out here for completeness:
 
-- **CA private key** (`rootCA-key.pem`) under `--ca-dir` must be protected. Treat the key as **highly confidential**; file permissions may not be restricted on all platforms or releases.
-- **`install-system`** requires administrator privileges and affects **system-wide** trust while the CA remains installed. Run `guardian remove-system` when decommissioning.
-- **Java truststore password** is a fixed default in config (`guardian`) and may appear in process environment; scope is limited to the injected truststore, but local process listing can observe it.
+- **CA private key** (`rootCA-key.pem`) under `--ca-dir` is restricted after load/generate: mode `0600` on Unix, owner-only ACL on Windows via `icacls`. Treat the key as **highly confidential** regardless.
+- **`install-system`** requires administrator privileges and affects **system-wide** trust while the CA remains installed. Run `guardian remove-system` or `guardian clean` when decommissioning.
+- **`guardian clean`** always deletes local artifacts under `--ca-dir` (and orphan `~/.guardian/guardian.toml` when `ca_dir` is custom). System trust removal runs only when elevated; otherwise it warns to re-run with `sudo guardian clean` (Unix) or as Administrator (Windows), and lists any local paths that could not be deleted.
+- **Java truststore password** is a fixed default in config (`guardian`). It is passed via `JAVA_TOOL_OPTIONS` and is visible to other local processes (Unix: `/proc/<pid>/cmdline`, `ps`; Windows: process command-line APIs / Task Manager). Blast radius is limited to the injected PKCS12 truststore, not the CA private key.
 
 ---
 

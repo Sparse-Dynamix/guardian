@@ -4,10 +4,17 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GUARDIAN_GIT_SHA"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
 #[command(
     name = "guardian",
-    version = env!("CARGO_PKG_VERSION"),
+    version = VERSION,
     about = "Harden AI harnesses by filtering web traffic and tool-call payloads",
     trailing_var_arg = true,
     allow_hyphen_values = true
@@ -68,6 +75,9 @@ pub enum Commands {
     /// Check whether the Guardian CA is installed in system trust stores.
     #[command(name = "check-system")]
     CheckSystem(SystemOpts),
+    /// Delete Guardian local artifacts; remove system trust when run as administrator.
+    #[command(name = "clean")]
+    Clean(SystemOpts),
     /// Print legal notice and third-party attributions (NOTICE.txt).
     #[command(name = "legal-notes")]
     LegalNotes,
@@ -92,7 +102,7 @@ pub fn parse_bind_ipv4(bind: &str) -> Result<Ipv4Addr> {
         .map_err(|_| anyhow::anyhow!("invalid bind address: {bind}"))?;
     match addr {
         std::net::IpAddr::V4(v4) => Ok(v4),
-        std::net::IpAddr::V6(_) => bail!("IPv6 bind is not supported in v1"),
+        std::net::IpAddr::V6(_) => bail!("IPv6 bind is not supported in v1beta"),
     }
 }
 
@@ -135,6 +145,12 @@ mod tests {
     fn remove_system_subcommand_parses() {
         let cli = Cli::try_parse_from(["guardian", "remove-system"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::RemoveSystem(_))));
+    }
+
+    #[test]
+    fn clean_subcommand_parses() {
+        let cli = Cli::try_parse_from(["guardian", "clean", "--stores", "system"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Clean(_))));
     }
 
     #[test]

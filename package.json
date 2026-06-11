@@ -1,6 +1,6 @@
 {
   "name": "guardian",
-  "version": "1.0.0",
+  "version": "1.0.0-beta",
   "description": "Run any command under transparent network interception.",
   "type": "module",
   "scripts": {
