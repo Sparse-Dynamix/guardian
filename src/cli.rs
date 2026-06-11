@@ -63,7 +63,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Subcommand program and arguments (MITM mode; use after `--`).
+    /// Subcommand program and arguments (Wrapper mode; use after `--`).
     #[arg(required = false)]
     pub program: Vec<String>,
 }

@@ -1,8 +1,10 @@
-use std::fs;
 use std::path::Path;
 
+#[cfg(any(unix, test))]
+use std::fs;
+
 #[cfg(windows)]
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[cfg(windows)]
 use anyhow::bail;
@@ -27,6 +29,8 @@ pub fn restrict_private_key(path: &Path) -> Result<()> {
         let status = Command::new("icacls")
             .arg(path)
             .args(["/inheritance:r", "/grant:r", &grant])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .with_context(|| format!("failed to run icacls on {}", path.display()))?;
         if !status.success() {

@@ -4,6 +4,7 @@ import { $ } from "zx";
 import { requirePlatform } from "./lib/guard.ts";
 import { applyJdkEnv, ensurePortableJdk } from "./lib/jdk.ts";
 import { applyCratePatches } from "./lib/cargo.ts";
+import { cleanCoverageArtifacts, IGNORED_COVERAGE } from "./lib/coverage.ts";
 import { cdRepo, REPO_ROOT, SCRIPTS_DIR } from "./lib/repo.ts";
 
 requirePlatform("mac");
@@ -20,8 +21,11 @@ const javaHome = await ensurePortableJdk("mac");
 applyJdkEnv(javaHome);
 
 const wrapper = path.join(SCRIPTS_DIR, "rustc-codesign-wrapper.zx.ts");
+const covTarget = path.join(REPO_ROOT, "target", "llvm-cov-target");
 
 await $`cargo llvm-cov clean`;
+cleanCoverageArtifacts();
+fs.mkdirSync(covTarget, { recursive: true });
 
 const showEnv = await $`cargo llvm-cov show-env --export-prefix`.quiet();
 for (const line of showEnv.stdout.split("\n")) {
@@ -37,7 +41,7 @@ process.env.LLVM_PROFILE_FILE = path.join(
   REPO_ROOT,
   "target",
   "llvm-cov-target",
-  "guardian-%p.profraw",
+  "guardian-%m-%p.profraw",
 );
 
 const { prepareMacSmokePath } = await import("./lib/mac-codesign.ts");
@@ -45,9 +49,8 @@ process.env.PATH = await prepareMacSmokePath(
   path.join(REPO_ROOT, "target", "debug"),
 );
 
-await $`cargo llvm-cov test --no-rustc-wrapper --features ws-smoke --fail-under-lines 90 -- --test-threads=1`;
+await $`cargo llvm-cov test --no-rustc-wrapper --features ws-smoke --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90 -- --test-threads=1`;
 
-const covTarget = path.join(REPO_ROOT, "target", "llvm-cov-target");
 fs.rmSync(path.join(covTarget, "debug"), { recursive: true, force: true });
 fs.mkdirSync(covTarget, { recursive: true });
 fs.cpSync(
@@ -66,4 +69,4 @@ for (const entry of fs.readdirSync(path.join(REPO_ROOT, "target"))) {
   }
 }
 
-await $`cargo llvm-cov report --summary-only --ignore-filename-regex ${"target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs"} --fail-under-lines 90`;
+await $`cargo llvm-cov report --summary-only --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90`;

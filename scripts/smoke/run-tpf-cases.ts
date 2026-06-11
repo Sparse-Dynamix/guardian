@@ -54,7 +54,7 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
       };
     case "remoteHttp2":
       return {
-        url: process.env.SMOKE_HTTPS_URL ?? "https://httpbingo.org/get",
+        url: process.env.SMOKE_HTTPS_URL ?? "https://nghttp2.org/httpbin/get",
       };
     case "localHttp2":
       return {
@@ -107,6 +107,8 @@ function curlArgs(
     "5",
     "--max-time",
     "20",
+    "--noproxy",
+    "*",
     ...extra,
   ];
   if (includeHeaders) {
@@ -143,6 +145,22 @@ function childArgs(
 
   const failOnHttpError = c.tpf !== "reject";
   const tpfActive = c.tpf !== "";
+  const wantsHttp2 = c.curlExtra?.some((flag) => flag.startsWith("--http2"));
+
+  if (hostPlatform() === "win" && wantsHttp2 && config.httpSmoke) {
+    const args = [config.httpSmoke];
+    if (c.curlExtra?.includes("--http2-prior-knowledge")) {
+      args.push("--http2-prior-knowledge");
+    } else {
+      args.push("--http2");
+    }
+    if (url.startsWith("https://")) {
+      args.push("--ipv4");
+    }
+    args.push(url);
+    return args;
+  }
+
   const curl = curlArgs(
     config,
     url,
@@ -269,7 +287,11 @@ async function runCase(c: TpfSmokeCase, servers: TestServers): Promise<void> {
       console.log("    ok");
       return;
     } catch (err) {
-      lastError = err;
+      const stdout = fs.readFileSync(result.stdoutFile, "utf8");
+      const stderr = fs.readFileSync(result.stderrFile, "utf8");
+      lastError = new Error(
+        `${err instanceof Error ? err.message : String(err)}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      );
       fs.rmSync(path.dirname(result.stdoutFile), {
         recursive: true,
         force: true,

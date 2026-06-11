@@ -58,11 +58,16 @@ export async function stageSignedSleep(destDir: string): Promise<void> {
   await stageSignedTool(destDir, "guardian-sleep", "sleep");
 }
 
+export async function stageSignedSh(destDir: string): Promise<void> {
+  await stageSignedTool(destDir, "guardian-sh", "sh");
+}
+
 export async function prepareMacSmokePath(binDir: string): Promise<string> {
   const signed = await stageSignedCurl(binDir);
   fs.copyFileSync(signed, path.join(binDir, "curl"));
   await stageSignedEnv(binDir);
   await stageSignedPrintenv(binDir);
   await stageSignedSleep(binDir);
+  await stageSignedSh(binDir);
   return `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 }

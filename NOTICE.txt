@@ -197,7 +197,7 @@ Frida (runtime instrumentation)
 --------------------------------------------------------------------------------
 
   Use       : connect() hooking and child-process instrumentation when --tpf is
-              set in MITM mode
+              set in Wrapper mode
   Project   : https://frida.re
   Bindings  : https://github.com/frida/frida-rust
   Shipped   : libfrida-core (shared library or DLL) loaded at runtime

@@ -8,6 +8,8 @@ import path from "node:path";
 
 const MANIFEST_PREFIX = "GUARDIAN_TEST_SERVERS ";
 const IMAGE_SWAP_BODY = "# Image description\n\n(swapped by TPF mock)\n";
+const DEFAULT_ORIGIN_HOST =
+  os.platform() === "darwin" ? "127.0.0.1" : "127.0.0.2";
 const MINIMAL_PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
   0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
@@ -106,7 +108,14 @@ function configFromEnv(): TestServersConfig {
   };
 }
 
-function createOriginTlsMaterial(tmpDir: string): {
+function originHostFromEnv(): string {
+  return process.env.GUARDIAN_TEST_ORIGIN_HOST ?? DEFAULT_ORIGIN_HOST;
+}
+
+function createOriginTlsMaterial(
+  tmpDir: string,
+  originHost: string,
+): {
   caPemPath: string;
   certPem: string;
   keyPem: string;
@@ -116,9 +125,21 @@ function createOriginTlsMaterial(tmpDir: string): {
   const serverKeyPath = path.join(tmpDir, "server-key.pem");
   const serverCertPath = path.join(tmpDir, "server-cert.pem");
   const csrPath = path.join(tmpDir, "server.csr");
+  const opensslCnfPath = path.join(tmpDir, "openssl.cnf");
+  fs.writeFileSync(
+    opensslCnfPath,
+    [
+      "[req]",
+      "distinguished_name = req_distinguished_name",
+      "[req_distinguished_name]",
+      "",
+    ].join("\n"),
+  );
 
   execFileSync("openssl", [
     "req",
+    "-config",
+    opensslCnfPath,
     "-x509",
     "-newkey",
     "rsa:2048",
@@ -134,6 +155,8 @@ function createOriginTlsMaterial(tmpDir: string): {
   ]);
   execFileSync("openssl", [
     "req",
+    "-config",
+    opensslCnfPath,
     "-newkey",
     "rsa:2048",
     "-keyout",
@@ -142,14 +165,14 @@ function createOriginTlsMaterial(tmpDir: string): {
     csrPath,
     "-nodes",
     "-subj",
-    "/CN=127.0.0.2",
+    `/CN=${originHost}`,
   ]);
   const extPath = path.join(tmpDir, "server-ext.cnf");
   fs.writeFileSync(
     extPath,
     [
       "[v3_req]",
-      "subjectAltName = IP:127.0.0.2",
+      `subjectAltName = IP:${originHost}`,
       "keyUsage = digitalSignature, keyEncipherment",
       "extendedKeyUsage = serverAuth",
       "",
@@ -187,7 +210,7 @@ function jsonGetResponse(reqUrl: string, protocol: string): string {
   return JSON.stringify({
     url: reqUrl,
     protocol,
-    headers: { Host: "127.0.0.2" },
+    headers: { Host: new URL(reqUrl).host },
   });
 }
 
@@ -197,7 +220,11 @@ export async function startTestServers(
   const tmpDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "guardian-test-servers-"),
   );
-  const { caPemPath, certPem, keyPem } = createOriginTlsMaterial(tmpDir);
+  const originHost = originHostFromEnv();
+  const { caPemPath, certPem, keyPem } = createOriginTlsMaterial(
+    tmpDir,
+    originHost,
+  );
   const tpfRequests: RecordedTpfRequest[] = [];
   const swapBody = config.tpfSwapBody ?? "SWAPPED_BODY";
   const rejectNeedle = config.tpfRejectNeedle;
@@ -264,7 +291,7 @@ export async function startTestServers(
   });
 
   const httpServer = http.createServer(async (req, res) => {
-    const host = req.headers.host ?? "127.0.0.2";
+    const host = req.headers.host ?? originHost;
     const reqUrl = `http://${host}${req.url ?? "/"}`;
     const pathOnly = (req.url ?? "").split("?")[0] ?? "";
 
@@ -311,7 +338,7 @@ export async function startTestServers(
   const http2cServer = http2.createServer((req, res) => {
     const pathOnly = (req.url ?? "").split("?")[0] ?? "";
     if (pathOnly === "/get" && req.method === "GET") {
-      const reqUrl = `http://127.0.0.2:${http2cPort}/get`;
+      const reqUrl = `http://${originHost}:${http2cPort}/get`;
       const body = jsonGetResponse(reqUrl, "h2");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(body);
@@ -329,7 +356,7 @@ export async function startTestServers(
     (req, res) => {
       const pathOnly = (req.url ?? "").split("?")[0] ?? "";
       if (pathOnly === "/get" && req.method === "GET") {
-        const reqUrl = `https://127.0.0.2:${http2Port}/get`;
+        const reqUrl = `https://${originHost}:${http2Port}/get`;
         const body = jsonGetResponse(reqUrl, "h2");
         res.writeHead(200, { "content-type": "application/json" });
         res.end(body);
@@ -361,35 +388,35 @@ export async function startTestServers(
   });
 
   const tpfPort = await listen(tpfServer, "127.0.0.1");
-  const httpPort = await listen(httpServer, "127.0.0.2");
-  try {
-    http2Port = await listen(http2Server, "127.0.0.2");
-    http2cPort = await listen(http2cServer, "127.0.0.2");
-  } catch (err) {
-    await Promise.all([closeServer(tpfServer), closeServer(httpServer)]);
-    throw err;
-  }
-  const ssePort = await listen(sseServer, "127.0.0.2");
+  let httpPort = 0;
+  let ssePort = 0;
   let ipv6Port = 0;
+  const ipv6Host = `::ffff:${originHost}`;
   try {
-    ipv6Port = await listen(ipv6Server, "::ffff:127.0.0.2");
+    httpPort = await listen(httpServer, originHost);
+    http2Port = await listen(http2Server, originHost);
+    http2cPort = await listen(http2cServer, originHost);
+    ssePort = await listen(sseServer, originHost);
+    ipv6Port = await listen(ipv6Server, ipv6Host);
   } catch (err) {
-    await Promise.all([
+    await Promise.allSettled([
       closeServer(tpfServer),
       closeServer(httpServer),
       closeServer(http2Server),
       closeServer(http2cServer),
       closeServer(sseServer),
+      closeServer(ipv6Server),
     ]);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
     throw err;
   }
 
   const tpfBase = `http://127.0.0.1:${tpfPort}`;
-  const httpBase = `http://127.0.0.2:${httpPort}`;
-  const http2Base = `https://127.0.0.2:${http2Port}`;
-  const http2cBase = `http://127.0.0.2:${http2cPort}`;
-  const sseBase = `http://127.0.0.2:${ssePort}`;
-  const ipv6Base = `http://[::ffff:127.0.0.2]:${ipv6Port}`;
+  const httpBase = `http://${originHost}:${httpPort}`;
+  const http2Base = `https://${originHost}:${http2Port}`;
+  const http2cBase = `http://${originHost}:${http2cPort}`;
+  const sseBase = `http://${originHost}:${ssePort}`;
+  const ipv6Base = `http://[${ipv6Host}]:${ipv6Port}`;
 
   const manifest: TestServersManifest = {
     tpf: {

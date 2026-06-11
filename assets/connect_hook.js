@@ -155,14 +155,19 @@ if (Process.platform === 'windows') {
     );
 }
 
-function setBlockingSocket(sockfd) {
+function setBlockingSocket(sockfd, restoreWindowsNonblocking) {
     if (Process.platform === 'windows') {
-        return null;
+        var ioctlsocket = new NativeFunction(globalExport('ioctlsocket'), 'int', ['int', 'long', 'pointer']);
+        var FIONBIO = 0x8004667e;
+        var mode = Memory.alloc(4);
+        mode.writeU32(0);
+        ioctlsocket(sockfd, FIONBIO, mode);
+        return restoreWindowsNonblocking === true;
     }
     var fcntl = new NativeFunction(globalExport('fcntl'), 'int', ['int', 'int', 'int']);
     var F_GETFL = 3;
     var F_SETFL = 4;
-    var O_NONBLOCK = 0x800;
+    var O_NONBLOCK = Process.platform === 'darwin' ? 0x4 : 0x800;
     var flags = fcntl(sockfd, F_GETFL, 0);
     if (flags >= 0) {
         fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK);
@@ -171,7 +176,17 @@ function setBlockingSocket(sockfd) {
 }
 
 function restoreSocketFlags(sockfd, flags) {
-    if (Process.platform === 'windows' || flags === null || flags < 0) {
+    if (Process.platform === 'windows') {
+        if (flags === true) {
+            var ioctlsocket = new NativeFunction(globalExport('ioctlsocket'), 'int', ['int', 'long', 'pointer']);
+            var FIONBIO = 0x8004667e;
+            var mode = Memory.alloc(4);
+            mode.writeU32(1);
+            ioctlsocket(sockfd, FIONBIO, mode);
+        }
+        return;
+    }
+    if (flags === null || flags < 0) {
         return;
     }
     var fcntl = new NativeFunction(globalExport('fcntl'), 'int', ['int', 'int', 'int']);
@@ -185,7 +200,8 @@ function lastConnectError() {
         return WSAGetLastError();
     }
     try {
-        var errnoLoc = new NativeFunction(globalExport('__errno_location'), 'pointer', []);
+        var errnoSymbol = Process.platform === 'darwin' ? '__error' : '__errno_location';
+        var errnoLoc = new NativeFunction(globalExport(errnoSymbol), 'pointer', []);
         return errnoLoc().readS32();
     } catch (e) {
         return 0;
@@ -195,6 +211,41 @@ function lastConnectError() {
 function isConnectPendingError(err) {
     return err === 11 || err === 35 || err === 36 || err === 37 || err === 114 || err === 115
         || err === 10035 || err === 10036 || err === 10037;
+}
+
+function waitForWindowsConnect(sockfd) {
+    var getsockopt = new NativeFunction(globalExport('getsockopt'), 'int', ['int', 'int', 'int', 'pointer', 'pointer']);
+    try {
+        var WSAPoll = new NativeFunction(globalExport('WSAPoll'), 'int', ['pointer', 'uint', 'int']);
+        var pollfd = Memory.alloc(Process.pointerSize + 4);
+        pollfd.writePointer(ptr(sockfd));
+        pollfd.add(Process.pointerSize).writeS16(0x0010);
+        pollfd.add(Process.pointerSize + 2).writeS16(0);
+        if (WSAPoll(pollfd, 1, 5000) <= 0) {
+            return false;
+        }
+    } catch (e) {
+        Thread.sleep(0.05);
+    }
+
+    var errBuf = Memory.alloc(4);
+    var errLen = Memory.alloc(4);
+    errLen.writeS32(4);
+    if (getsockopt(sockfd, 0xffff, 0x1007, errBuf, errLen) !== 0) {
+        return false;
+    }
+    return errBuf.readS32() === 0;
+}
+
+function setWindowsSocketTimeouts(sockfd) {
+    if (Process.platform !== 'windows') {
+        return;
+    }
+    var setsockopt = new NativeFunction(globalExport('setsockopt'), 'int', ['int', 'int', 'int', 'pointer', 'int']);
+    var timeout = Memory.alloc(4);
+    timeout.writeU32(5000);
+    setsockopt(sockfd, 0xffff, 0x1005, timeout, 4);
+    setsockopt(sockfd, 0xffff, 0x1006, timeout, 4);
 }
 
 var recvCarry = {};
@@ -276,7 +327,8 @@ function failConnect(retval, sockfd, originalFlags) {
         shutdown(sockfd, 2);
         close(sockfd);
         try {
-            var errnoLoc = new NativeFunction(globalExport('__errno_location'), 'pointer', []);
+            var errnoSymbol = Process.platform === 'darwin' ? '__error' : '__errno_location';
+            var errnoLoc = new NativeFunction(globalExport(errnoSymbol), 'pointer', []);
             errnoLoc().writeS32(111);
         } catch (e) { }
     }
@@ -325,6 +377,17 @@ function performSyntheticConnect(sockfd, socket_send, socket_recv, authority, re
         storeCarry(sockfd, verdict.leftover);
     }
     restoreSocketFlags(sockfd, originalFlags);
+    if (Process.platform === 'windows') {
+        var WSASetLastError = new NativeFunction(globalExport('WSASetLastError'), 'void', ['int']);
+        WSASetLastError(0);
+    } else {
+        try {
+            var errnoSymbol = Process.platform === 'darwin' ? '__error' : '__errno_location';
+            var errnoLoc = new NativeFunction(globalExport(errnoSymbol), 'pointer', []);
+            errnoLoc().writeS32(0);
+        } catch (e) { }
+    }
+    retval.replace(0);
 }
 
 function hookConnect(connect_p, send_p, recv_p) {
@@ -393,13 +456,25 @@ function hookConnect(connect_p, send_p, recv_p) {
             if (!this.hook) {
                 return;
             }
+            var pendingConnect = false;
+            var restoreWindowsNonblocking = false;
             if (retval.toInt32() !== 0) {
-                if (!isConnectPendingError(lastConnectError())) {
+                restoreWindowsNonblocking = Process.platform === 'windows';
+                var connectError = lastConnectError();
+                if (isConnectPendingError(connectError)) {
+                    pendingConnect = true;
+                } else if (Process.platform !== 'windows' || connectError !== 0) {
                     return;
                 }
             }
             var sockfd = this.sockfd.toInt32();
-            var originalFlags = setBlockingSocket(sockfd);
+            var originalFlags = setBlockingSocket(sockfd, restoreWindowsNonblocking);
+            if (Process.platform === 'windows') {
+                setWindowsSocketTimeouts(sockfd);
+                if (pendingConnect) {
+                    waitForWindowsConnect(sockfd);
+                }
+            }
 
             var target = connectTarget(this.addrKey);
             var authority = formatConnectAuthority(target, this.port);

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -270,6 +270,8 @@ fn build_java_truststore(caroot: &Path, root_ca: &Path, settings: &Settings) -> 
             password,
             "-noprompt",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .context("keytool importkeystore failed")?;
     if !status.success() {
@@ -289,6 +291,8 @@ fn build_java_truststore(caroot: &Path, root_ca: &Path, settings: &Settings) -> 
             password,
             "-noprompt",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .context("keytool importcert failed")?;
     if !status.success() {
@@ -310,6 +314,8 @@ fn build_java_truststore(caroot: &Path, root_ca: &Path, settings: &Settings) -> 
             password,
             "-noprompt",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .context("keytool PKCS12 conversion failed")?;
     let _ = fs::remove_file(&tmp);

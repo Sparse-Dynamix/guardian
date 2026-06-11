@@ -4,26 +4,30 @@ Harden AI harnesses by filtering web traffic and tool-call payloads through a Tr
 
 ## Modes
 
-**MITM mode** — wrap a child process:
+![Wrapper mode diagram](assets/wrapper-mode.png)
+
+**Wrapper mode** — wrap a child process:
 
 ```bash
-guardian --tpf http://filter.example/check -- opencode
+guardian --tpf https://filter.example/check -- opencode
 guardian -- curl https://httpbin.org/get   # passthrough when --tpf is omitted
 ```
 
 **Payload mode** — filter tool-call payloads:
 
+![Payload mode diagram](assets/payload-mode.png)
+
 ```bash
-guardian --tpf http://filter.example/check --payload '{"tool":"read_file"}'
-echo '{"tool":"read_file"}' | guardian --tpf http://filter.example/check
+guardian --tpf https://filter.example/check --payload '{"tool":"read_file"}'
+echo '{"tool":"read_file"}' | guardian --tpf https://filter.example/check
 ```
 
-Without `--tpf`, MITM mode runs the child directly and payload mode echoes stdin/`--payload` to stdout.
+Without `--tpf`, Wrapper mode runs the child directly and payload mode echoes stdin/`--payload` to stdout.
 
 ## Quick start
 
 1. **Build** — see [AGENTS.md](AGENTS.md#build).
-2. **Optional — trust the Guardian CA** (MITM mode with `--tpf` only):
+2. **Optional — trust the Guardian CA** (Wrapper mode with `--tpf` only):
 
    ```bash
    sudo guardian install-system
@@ -41,7 +45,7 @@ Guardian stores its CA and config under `~/.guardian` by default.
 ## Usage
 
 ```text
-guardian [OPTIONS] -- <PROGRAM> [ARGS]...     # MITM mode
+guardian [OPTIONS] -- <PROGRAM> [ARGS]...     # Wrapper mode
 guardian [OPTIONS] --payload <TEXT>           # payload mode
 echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 ```

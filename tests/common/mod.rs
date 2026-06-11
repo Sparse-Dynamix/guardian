@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
-const DEFAULT_HTTPS_SMOKE_URL: &str = "https://httpbingo.org/get";
+const DEFAULT_HTTPS_SMOKE_URL: &str = "https://nghttp2.org/httpbin/get";
 
 static MITM_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -124,6 +124,31 @@ pub fn staged_curl_program() -> Option<String> {
     }
 }
 
+pub fn http_smoke_program() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_guardian-http-smoke") {
+        return Some(path.to_string());
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let exe = if cfg!(windows) {
+        "guardian-http-smoke.exe"
+    } else {
+        "guardian-http-smoke"
+    };
+    for sub in [
+        format!("target/debug/{exe}"),
+        format!("target/release/{exe}"),
+    ] {
+        let path = manifest.join(&sub);
+        if path.is_file() {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
 pub fn staged_sh_program() -> Option<String> {
     if cfg!(target_os = "macos") {
         staged_mac_binary("guardian-sh")
@@ -151,6 +176,25 @@ fn curl_args(
     include_headers: bool,
     extra_flags: &[String],
 ) -> Vec<String> {
+    if cfg!(windows) && extra_flags.iter().any(|flag| flag.starts_with("--http2")) {
+        if let Some(http_smoke) = http_smoke_program() {
+            let mut args = vec![http_smoke];
+            if extra_flags
+                .iter()
+                .any(|flag| flag == "--http2-prior-knowledge")
+            {
+                args.push("--http2-prior-knowledge".to_string());
+            } else {
+                args.push("--http2".to_string());
+            }
+            if url.starts_with("https://") {
+                args.push("--ipv4".to_string());
+            }
+            args.push(url.to_string());
+            return args;
+        }
+    }
+
     let mut args = vec![curl_program(), "-sS".to_string()];
     args.extend(extra_flags.iter().cloned());
     if include_headers {

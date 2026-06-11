@@ -62,12 +62,24 @@ async function runGuardian(guardianArgs: string[]): Promise<RunResult> {
 }
 
 function curlArgs(url: string): string[] {
-  const args = ["-sSf", "--connect-timeout", "5", "--max-time", "20"];
+  const args = [
+    "-sSf",
+    "--connect-timeout",
+    "5",
+    "--max-time",
+    "20",
+    "--noproxy",
+    "*",
+  ];
   if (hostPlatform() === "mac") {
     args.push("--ipv4");
   }
   args.push(url);
   return args;
+}
+
+function shellQuote(arg: string): string {
+  return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 
 async function runDirect(url: string): Promise<RunResult> {
@@ -94,7 +106,7 @@ async function runChild(url: string): Promise<RunResult> {
     const cmd = process.env.COMSPEC ?? resolveExecutable("cmd.exe");
     guardianArgs.push(cmd, "/c", config.curl, ...curlArgs(url));
   } else if (config.childShell) {
-    const inner = `${config.curl} ${curlArgs(url).join(" ")}`.trim();
+    const inner = [config.curl, ...curlArgs(url)].map(shellQuote).join(" ");
     guardianArgs.push(...config.childShell, inner);
   } else {
     throw new Error("platform config missing child spawn wrapper");
@@ -193,7 +205,7 @@ async function runInterrupt(servers: TestServers): Promise<RunResult> {
     childProgram = resolveExecutable("cmd.exe");
     childArgs = ["/c", "ping -n 60 127.0.0.1 >NUL"];
   } else {
-    childProgram = resolveExecutable("sleep");
+    childProgram = config.interruptChild ?? resolveExecutable("sleep");
     childArgs = ["60"];
   }
 

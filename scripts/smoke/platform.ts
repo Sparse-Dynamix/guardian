@@ -9,6 +9,8 @@ export interface PlatformConfig {
   curl: string;
   childShell?: string[];
   childWrapper?: string;
+  interruptChild?: string;
+  httpSmoke?: string;
 }
 
 export function platformConfig(): PlatformConfig {
@@ -25,11 +27,13 @@ export function platformConfig(): PlatformConfig {
         guardianBin: path.join(release, "guardian"),
         curl: path.join(release, "guardian-curl"),
         childWrapper: path.join(release, "guardian-env"),
+        interruptChild: path.join(release, "guardian-sleep"),
       };
     case "win":
       return {
         guardianBin: path.join(release, "guardian.exe"),
         curl: resolveExecutable("curl.exe"),
+        httpSmoke: path.join(release, "guardian-http-smoke.exe"),
       };
   }
 }

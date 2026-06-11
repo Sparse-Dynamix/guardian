@@ -9,8 +9,8 @@ use common::{
 fn loopback_bypass_skips_mitm_tpf_filter() {
     let servers = spawn_test_servers(TestServersConfig::default());
     assert!(
-        servers.http_get_url.contains("127.0.0.2"),
-        "expected loopback test server on 127.0.0.2, got {}",
+        servers.http_get_url.starts_with("http://127."),
+        "expected loopback test server on 127/8, got {}",
         servers.http_get_url
     );
 

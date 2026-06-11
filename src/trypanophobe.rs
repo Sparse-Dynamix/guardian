@@ -242,20 +242,27 @@ mod tests {
                         let mut buf = [0u8; 65536];
                         let n = stream.read(&mut buf).unwrap_or(0);
                         let req = String::from_utf8_lossy(&buf[..n]);
-                        if let Some(rec) = &record {
-                            let query = req
+                        if n > 0
+                            && req
                                 .lines()
                                 .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .split('?')
-                                .nth(1)
-                                .unwrap_or("")
-                                .to_string();
-                            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(n);
-                            let mut guard = rec.lock().expect("lock");
-                            guard.query = query;
-                            guard.body = buf[body_start..n].to_vec();
+                                .is_some_and(|line| line.starts_with("POST "))
+                        {
+                            if let Some(rec) = &record {
+                                let query = req
+                                    .lines()
+                                    .next()
+                                    .and_then(|line| line.split_whitespace().nth(1))
+                                    .unwrap_or("")
+                                    .split('?')
+                                    .nth(1)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(n);
+                                let mut guard = rec.lock().expect("lock");
+                                guard.query = query;
+                                guard.body = buf[body_start..n].to_vec();
+                            }
                         }
                         let ct_line = ct
                             .as_ref()

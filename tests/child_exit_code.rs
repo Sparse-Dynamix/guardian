@@ -3,31 +3,16 @@ mod common;
 use std::process::Command;
 use std::process::Stdio;
 
-use common::{cmd_program, guardian_bin, spawn_tpf_mock};
+use common::{guardian_bin, spawn_tpf_mock};
 use tempfile::TempDir;
 
 const EXPECTED_EXIT: i32 = 7;
 
 fn exit_child_args() -> Vec<String> {
-    if cfg!(windows) {
-        vec![
-            cmd_program(),
-            "/C".to_string(),
-            format!("exit /b {EXPECTED_EXIT}"),
-        ]
-    } else if let Ok(python) = which::which("python3") {
-        vec![
-            python.to_string_lossy().into_owned(),
-            "-c".to_string(),
-            format!("import time, sys; time.sleep(0.2); sys.exit({EXPECTED_EXIT})"),
-        ]
-    } else {
-        vec![
-            cmd_program(),
-            "-c".to_string(),
-            format!("sleep 0.2; exit {EXPECTED_EXIT}"),
-        ]
-    }
+    vec![
+        env!("CARGO_BIN_EXE_guardian-exit-code").to_string(),
+        EXPECTED_EXIT.to_string(),
+    ]
 }
 
 fn run_guardian(args: &[String]) -> i32 {

@@ -4,11 +4,11 @@ Guardian is a **local TLS man-in-the-middle (MITM) proxy** used to harden AI age
 
 Print this document anytime with `guardian security-notes`. Legal disclaimers and third-party attributions: `guardian legal-notes`.
 
-**This is not optional behavior.** Without `--tpf`, Guardian does not install hooks, does not run the proxy, and does not decrypt TLS—it simply execs the child (MITM mode) or echoes/filters payloads (payload mode). **With `--tpf` in MITM mode, TLS interception is the core mechanism**, not an add-on.
+**This is not optional behavior.** Without `--tpf`, Guardian does not install hooks, does not run the proxy, and does not decrypt TLS—it simply execs the child (Wrapper mode) or echoes/filters payloads (payload mode). **With `--tpf` in Wrapper mode, TLS interception is the core mechanism**, not an add-on.
 
 ---
 
-## What Guardian does when `--tpf` is set (MITM mode)
+## What Guardian does when `--tpf` is set (Wrapper mode)
 
 1. **Frida hooks** the child’s `connect()` / `WSAConnect` for outbound TCP (IPv4 and IPv6) and redirects eligible sockets to a local forward proxy.
 2. **Proxelar** accepts those connections, terminates TLS using a **Guardian-issued certificate** signed by a **local root CA**, decodes HTTP/HTTPS and WebSocket traffic, and buffers or streams response bodies as configured.
@@ -36,7 +36,7 @@ Child app ──TLS──► upstream server
 
 ### What is decrypted
 
-When MITM mode runs with `--tpf`:
+When Wrapper mode runs with `--tpf`:
 
 - **All TLS** on hooked TCP connections that reach the proxy is **terminated and decrypted** at the proxy.
 - Response bodies (and per-event SSE payloads) are held in memory, posted to `--tpf`, and only then forwarded if allowed.

@@ -123,6 +123,8 @@ fn exit_code_from_siginfo(info: &libc::siginfo_t) -> i32 {
 
 #[cfg(target_os = "macos")]
 fn wait_macos(pid: u32) -> Result<i32> {
+    const NOTE_EXITSTATUS: libc::uint32_t = 0x0400_0000;
+
     unsafe {
         let kq = libc::kqueue();
         if kq < 0 {
@@ -130,14 +132,12 @@ fn wait_macos(pid: u32) -> Result<i32> {
         }
 
         let mut kev: libc::kevent = std::mem::zeroed();
-        libc::EV_SET(
-            &mut kev,
-            pid as libc::uintptr_t,
-            libc::EVFILT_PROC,
-            libc::EV_ADD,
-            libc::NOTE_EXIT,
-            0,
-        );
+        kev.ident = pid as libc::uintptr_t;
+        kev.filter = libc::EVFILT_PROC;
+        kev.flags = libc::EV_ADD;
+        kev.fflags = libc::NOTE_EXIT | NOTE_EXITSTATUS;
+        kev.data = 0;
+        kev.udata = std::ptr::null_mut();
         if libc::kevent(kq, &kev, 1, std::ptr::null_mut(), 0, std::ptr::null()) < 0 {
             let err = std::io::Error::last_os_error();
             libc::close(kq);
@@ -160,8 +160,16 @@ fn wait_macos(pid: u32) -> Result<i32> {
         }
         libc::close(kq);
 
-        let status = out_kev.data as i32;
-        Ok((status >> 8) & 0xff)
+        Ok(exit_code_from_kqueue_status(out_kev.data as i32))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn exit_code_from_kqueue_status(status: i32) -> i32 {
+    if (0..=0xff).contains(&status) {
+        status
+    } else {
+        (status >> 8) & 0xff
     }
 }
 
@@ -170,12 +178,19 @@ fn wait_windows(pid: u32) -> Result<i32> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, WaitForSingleObject, INFINITE,
-        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     const STILL_ACTIVE: u32 = 259;
+    const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+            0,
+            pid,
+        )
+    };
     if handle.is_null() {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("OpenProcess failed for pid {pid}"));

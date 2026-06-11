@@ -23,7 +23,12 @@ const status = result.exitCode ?? 1;
 
 if (status === 0 && out && path.basename(out)) {
   const base = path.basename(out);
-  if (base === "guardian" || base === "guardian-ws-smoke") {
+  if (
+    base === "guardian" ||
+    base === "guardian-ws-smoke" ||
+    base === "guardian-http-smoke" ||
+    base === "guardian-exit-code"
+  ) {
     await signGuardianBin(out);
     await prepareMacSmokePath(path.dirname(out));
   }

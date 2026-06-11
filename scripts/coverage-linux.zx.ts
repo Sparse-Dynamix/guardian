@@ -3,6 +3,7 @@ import { requirePlatform } from "./lib/guard.ts";
 import { applyJdkEnv, ensurePortableJdk } from "./lib/jdk.ts";
 import { applyCratePatches } from "./lib/cargo.ts";
 import { cdRepo } from "./lib/repo.ts";
+import { cleanCoverageArtifacts, IGNORED_COVERAGE } from "./lib/coverage.ts";
 
 requirePlatform("linux");
 cdRepo();
@@ -17,9 +18,7 @@ await $`command -v cargo-llvm-cov`.quiet().catch(() => {
 const javaHome = await ensurePortableJdk("linux");
 applyJdkEnv(javaHome);
 
-const IGNORED_COVERAGE =
-  "target/patch|src/bin/ws_smoke.rs|build.rs|src/install.rs";
-
 await $`cargo llvm-cov clean`;
-await $`cargo llvm-cov test --features ws-smoke -- --test-threads=1`;
+cleanCoverageArtifacts();
+await $`cargo llvm-cov test --features ws-smoke --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90 -- --test-threads=1`;
 await $`cargo llvm-cov report --summary-only --ignore-filename-regex ${IGNORED_COVERAGE} --fail-under-lines 90`;
