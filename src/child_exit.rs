@@ -208,6 +208,31 @@ mod tests {
     use super::ChildExitWaiter;
 
     #[test]
+    fn waiter_collects_exit_for_immediate_child() {
+        #[cfg(not(windows))]
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 4"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        #[cfg(windows)]
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "exit 4"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+
+        let pid = child.id();
+        let waiter = ChildExitWaiter::start(pid).expect("start waiter");
+        assert_eq!(waiter.wait().expect("waiter exit code"), 4);
+        drop(child);
+    }
+
+    #[test]
     fn waiter_returns_child_exit_code() {
         #[cfg(windows)]
         let mut child = Command::new("cmd.exe")

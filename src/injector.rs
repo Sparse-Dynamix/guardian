@@ -110,10 +110,6 @@ fn instrument<'a>(
         .context("failed to load env inject script")?;
     std::mem::forget(env_script);
 
-    device
-        .resume(pid)
-        .with_context(|| format!("failed to resume pid {pid}"))?;
-
     sessions.insert(
         pid,
         TrackedSession {
@@ -122,6 +118,12 @@ fn instrument<'a>(
         },
     );
     Ok(())
+}
+
+fn resume_pid(device: &frida::Device<'_>, pid: u32) -> Result<()> {
+    device
+        .resume(pid)
+        .with_context(|| format!("failed to resume pid {pid}"))
 }
 
 pub struct SpawnOutcome {
@@ -207,7 +209,10 @@ pub fn run_injection_coordinated(
     )
     .context("failed to instrument root process")?;
 
+    // Arm pidfd wait after attach but before resume so fast exits cannot be reaped
+    // before waitid is registered (avoids ESRCH flakes and ChildRemoved hangs).
     let exit_waiter = ChildExitWaiter::start(root_pid)?;
+    resume_pid(&device, root_pid)?;
 
     let exit_code = wait_for_root(
         root_pid,
@@ -294,7 +299,6 @@ fn wait_for_root<'a>(
     process_poll_interval_ms: u64,
 ) -> Result<i32> {
     let poll = Duration::from_millis(process_poll_interval_ms);
-    let mut awaiting_exit = false;
 
     loop {
         if interrupt_rx.try_recv().is_ok() {
@@ -306,8 +310,6 @@ fn wait_for_root<'a>(
         while let Ok(event) = event_rx.try_recv() {
             if is_authoritative_root_exit(&event, root_pid) {
                 sessions.remove(&root_pid);
-                awaiting_exit = true;
-                break;
             }
             match event {
                 ProcessEvent::ChildRemoved(pid) => {
@@ -319,19 +321,18 @@ fn wait_for_root<'a>(
                         .with_context(|| {
                             format!("failed to re-instrument pid {pid} after process replacement")
                         })?;
+                    resume_pid(device, pid)?;
                 }
                 ProcessEvent::ChildAdded(pid) => {
                     instrument(device, sessions, pid, hook_bundle, event_tx, root_pid)
                         .with_context(|| format!("failed to instrument child {pid}"))?;
+                    resume_pid(device, pid)?;
                 }
             }
         }
 
-        if awaiting_exit {
-            if let Some(code) = exit_waiter.try_recv_exit(poll)? {
-                return Ok(code);
-            }
-            continue;
+        if let Some(code) = exit_waiter.try_recv_exit(poll)? {
+            return Ok(code);
         }
 
         match interrupt_rx.recv_timeout(poll) {
@@ -424,7 +425,6 @@ mod tests {
             port_min: 1024,
             port_max: 65535,
             proxy_ready_timeout_secs: 5,
-            proxy_ready_poll_ms: 10,
             process_poll_interval_ms: 50,
             ca_bundle_name: "guardian-ca-bundle.pem".to_string(),
             java_truststore_name: "guardian-java-truststore.p12".to_string(),

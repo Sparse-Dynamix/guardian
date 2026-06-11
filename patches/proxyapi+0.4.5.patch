@@ -2230,3 +2230,106 @@ index 00505ad..c0621b1 100644
  }
  
  impl<T> AsyncRead for Rewind<T>
+diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
+--- a/src/proxy/mod.rs
++++ b/src/proxy/mod.rs
+@@ -17,7 +17,8 @@
+ use hyper_util::server::conn::auto;
+ use proxyapi_models::ProxiedRequest;
+ use tokio::net::TcpListener;
+-use tokio::sync::mpsc;
++use tokio::sync::{mpsc, oneshot};
++use tokio::task::JoinSet;
+ 
+ use crate::body::ProxyBody;
+ use crate::ca::Ssl;
+@@ -263,6 +264,8 @@
+     pub script_path: Option<PathBuf>,
+     /// Optional channel for receiving replay requests from the UI.
+     pub replay_rx: Option<mpsc::Receiver<ProxiedRequest>>,
++    /// Optional one-shot signaled after the listen socket is bound.
++    pub ready_tx: Option<oneshot::Sender<()>>,
+ }
+ 
+ /// Whether the proxy operates in forward (CONNECT tunneling) or reverse mode.
+@@ -291,6 +294,9 @@
+     /// Start the proxy and run until the `shutdown` future resolves.
+     pub async fn start(self, shutdown: impl Future<Output = ()>) -> Result<(), Error> {
+         let listener = TcpListener::bind(self.config.addr).await?;
++        if let Some(tx) = self.config.ready_tx {
++            let _ = tx.send(());
++        }
+         tracing::info!("Proxy listening on {}", self.config.addr);
+ 
+         // Load Lua script engine if a script path was provided.
+@@ -319,6 +325,7 @@
+         let client = Arc::new(UpstreamClients::build(tls_config));
+ 
+         let mut replay_rx = self.config.replay_rx;
++        let mut connections = JoinSet::new();
+ 
+         tokio::pin!(shutdown);
+ 
+@@ -350,15 +357,21 @@
+                     match &self.config.mode {
+                         ProxyMode::Forward => {
+                             let listen_addr = self.config.addr;
+-                            tokio::spawn(forward::handle_connection(
+-                                stream, remote_addr, handler, ca, client, listen_addr,
+-                            ));
++                            connections.spawn(async move {
++                                forward::handle_connection(
++                                    stream, remote_addr, handler, ca, client, listen_addr,
++                                )
++                                .await;
++                            });
+                         }
+                         ProxyMode::Reverse { target } => {
+                             let target = target.clone();
+-                            tokio::spawn(reverse::handle_connection(
+-                                stream, remote_addr, handler, target, client,
+-                            ));
++                            connections.spawn(async move {
++                                reverse::handle_connection(
++                                    stream, remote_addr, handler, target, client,
++                                )
++                                .await;
++                            });
+                         }
+                     }
+                 }
+@@ -375,7 +388,15 @@
+                     if let Some(ref engine) = script_engine {
+                         handler = handler.with_script_engine(Arc::clone(engine));
+                     }
+-                    tokio::spawn(forward::handle_replay(req, handler, Arc::clone(&client)));
++                    let client = Arc::clone(&client);
++                    connections.spawn(async move {
++                        forward::handle_replay(req, handler, client).await;
++                    });
++                }
++                Some(res) = connections.join_next(), if !connections.is_empty() => {
++                    if let Err(e) = res {
++                        tracing::warn!("Connection task failed: {e}");
++                    }
+                 }
+                 () = &mut shutdown => {
+                     tracing::info!("Proxy shutting down");
+@@ -384,6 +405,9 @@
+             }
+         }
+ 
++        connections.shutdown().await;
++        while connections.join_next().await.is_some() {}
++
+         Ok(())
+     }
+ }
+@@ -435,6 +459,7 @@
+             #[cfg(feature = "scripting")]
+             script_path: None,
+             replay_rx: None,
++            ready_tx: None,
+         };
+ 
+         let proxy = Proxy::new(config);

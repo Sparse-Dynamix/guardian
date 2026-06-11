@@ -113,23 +113,54 @@ async fn run_mitm_filtered(settings: Settings) -> Result<i32> {
     let proxy_cancel = proxy_handle.cancel.clone();
     let mut injection = injection;
 
-    let outcome = tokio::select! {
-        join = &mut injection => join.context("injection join failed")??,
+    enum ShutdownPath {
+        Normal(SpawnOutcome),
+        Interrupted(SpawnOutcome),
+        Forced,
+    }
+
+    let path = tokio::select! {
+        join = &mut injection => ShutdownPath::Normal(join.context("injection join failed")??),
         res = signals::shutdown_signal() => {
             res?;
             let _ = interrupt_tx.send(());
             proxy_cancel.cancel();
-            match tokio::time::timeout(SHUTDOWN_GRACE, &mut injection).await {
-                Ok(Ok(Ok(outcome))) => outcome,
-                _ => SpawnOutcome { exit_code: 130 },
+            tokio::select! {
+                res = tokio::time::timeout(SHUTDOWN_GRACE, &mut injection) => {
+                    let outcome = match res {
+                        Ok(Ok(Ok(outcome))) => outcome,
+                        _ => SpawnOutcome { exit_code: 130 },
+                    };
+                    ShutdownPath::Interrupted(outcome)
+                }
+                _ = signals::force_shutdown_signal() => {
+                    injection.abort();
+                    ShutdownPath::Forced
+                }
             }
         }
     };
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    proxy_handle.cancel.cancel();
+    let mut exit_code = match path {
+        ShutdownPath::Forced => 130,
+        ShutdownPath::Normal(outcome) | ShutdownPath::Interrupted(outcome) => outcome.exit_code,
+    };
 
-    Ok(normalize_exit_code(outcome.exit_code))
+    let proxy_forced = tokio::select! {
+        res = proxy_handle.shutdown(SHUTDOWN_GRACE) => {
+            res?;
+            false
+        }
+        _ = signals::force_shutdown_signal() => {
+            proxy_cancel.cancel();
+            true
+        }
+    };
+    if proxy_forced {
+        exit_code = 130;
+    }
+
+    Ok(normalize_exit_code(exit_code))
 }
 
 async fn run_mitm(settings: Settings) -> Result<i32> {

@@ -27,3 +27,8 @@ pub async fn shutdown_signal() -> Result<()> {
         Ok(())
     }
 }
+
+/// Second shutdown signal during graceful teardown (after the first was consumed).
+pub async fn force_shutdown_signal() -> Result<()> {
+    shutdown_signal().await
+}

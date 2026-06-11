@@ -381,7 +381,6 @@ mod tests {
             port_min: 1024,
             port_max: 65535,
             proxy_ready_timeout_secs: 5,
-            proxy_ready_poll_ms: 10,
             process_poll_interval_ms: 50,
             ca_bundle_name: "guardian-ca-bundle.pem".into(),
             java_truststore_name: "guardian-java-truststore.p12".into(),

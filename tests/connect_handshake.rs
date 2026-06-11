@@ -53,6 +53,7 @@ fn embedded_proxy_connect_returns_200() {
         intercept: None,
         body_capture_limit: None,
         replay_rx: None,
+        ready_tx: None,
     };
     let proxy = Proxy::new(proxy_config);
     let cancel_for_proxy = cancel.clone();
