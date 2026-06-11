@@ -49,7 +49,7 @@ flowchart TB
 ```text
 main (tokio)
  ├─ resolve Settings
- ├─ CaTrust + Ssl::load_or_generate
+ ├─ CaTrust + prepare_mitm_ca (rotate unless install-system or --skip-cert-regen)
  ├─ spawn_blocking: frida spawn → port → proxy ready → instrument → wait
  ├─ proxy with ContentFilter (no JSONL)
  └─ exit(normalize_exit_code)
@@ -111,6 +111,7 @@ TPF mock endpoints: `POST /pass` → 200 empty; `POST /reject` → 503; `POST /s
 | `ignored_ports` | `--ignored-ports` | — | see toml | Ports left unhooked when `--filter` is unset |
 | `trypanophobe_swap` | `--tps` | — | `false` | Swap TPF 200 body/headers into harness (requires `--tpf`) |
 | `ca_dir` | `--ca-dir` | `GUARDIAN_CA_DIR` | `~/.guardian` | CA directory |
+| `skip_cert_regen` | `--skip-cert-regen` | `GUARDIAN_SKIP_CERT_REGEN` | `false` | Reuse on-disk CA; default rotates each MITM run unless `install-system` |
 | `filter_timeout_secs` | — | `GUARDIAN_FILTER_TIMEOUT_SECS` | `10` | Filter HTTP timeout |
 | `block_message` | — | `GUARDIAN_BLOCK_MESSAGE` | see toml | Substitution text on block |
 | `upstream_tls` | — | `GUARDIAN_UPSTREAM_TLS` | `default` | Upstream TLS trust: `default`, `default+ca:/path`, `ca-only:/path`, or `insecure` |

@@ -9,6 +9,7 @@ ignored_ports = [
     3306, 5432, 6379, 27017, 3389, 389, 636, 5060,
 ]
 ca_dir = "~/.guardian"
+# skip_cert_regen = true   # reuse existing CA on disk instead of rotating each MITM run
 
 filter_timeout_secs = 10
 block_message = "Blocked by Guardian: content failed safety check"

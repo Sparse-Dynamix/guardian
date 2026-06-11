@@ -37,6 +37,7 @@ pub struct FileSettings {
     pub node_options_append: String,
     pub trust_stores: Option<Vec<String>>,
     pub upstream_tls: Option<String>,
+    pub skip_cert_regen: bool,
 }
 
 impl Default for FileSettings {
@@ -62,6 +63,7 @@ impl Default for FileSettings {
             node_options_append: "--use-openssl-ca".to_string(),
             trust_stores: None,
             upstream_tls: None,
+            skip_cert_regen: false,
         }
     }
 }
@@ -90,6 +92,7 @@ pub struct Settings {
     pub args: Vec<String>,
     pub trust_stores: Vec<String>,
     pub upstream_tls: UpstreamTlsConfig,
+    pub skip_cert_regen: bool,
 }
 
 fn home_dir_for_tilde() -> Result<PathBuf> {
@@ -216,6 +219,7 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
     let port = cli.port.or(file.port);
     let trypanophobe_filter = merge_tpf(cli, &file);
     let trypanophobe_swap = cli.trypanophobe_swap || file.trypanophobe_swap;
+    let skip_cert_regen = cli.skip_cert_regen || file.skip_cert_regen;
     if trypanophobe_swap && trypanophobe_filter.is_none() {
         anyhow::bail!("--trypanophobe-swap / --tps requires --tpf / trypanophobe_filter");
     }
@@ -267,6 +271,7 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         args: vec![],
         trust_stores,
         upstream_tls,
+        skip_cert_regen,
     })
 }
 
@@ -606,6 +611,37 @@ mod tests {
         with_env_var("GUARDIAN_UPSTREAM_TLS", Some("insecure"), || {
             let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
             assert_eq!(settings.upstream_tls, UpstreamTlsConfig::Insecure);
+        });
+    }
+
+    #[test]
+    fn skip_cert_regen_from_file() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("guardian.toml");
+        std::fs::write(&cfg_path, "skip_cert_regen = true\n").unwrap();
+        let mut argv = vec!["guardian", "--config", cfg_path.to_str().unwrap(), "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.skip_cert_regen);
+    }
+
+    #[test]
+    fn skip_cert_regen_from_cli() {
+        let mut argv = vec!["guardian", "--skip-cert-regen", "--"];
+        argv.extend(test_true_args());
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let settings = resolve_settings(&cli).unwrap();
+        assert!(settings.skip_cert_regen);
+    }
+
+    #[test]
+    fn env_skip_cert_regen() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        with_env_var("GUARDIAN_SKIP_CERT_REGEN", Some("true"), || {
+            let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
+            assert!(settings.skip_cert_regen);
         });
     }
 

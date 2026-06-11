@@ -54,6 +54,7 @@ echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 | `-p, --port` | Proxy listen port (MITM + `--tpf`; default: auto) |
 | `-b, --bind` | Proxy bind IPv4 (default: `127.0.0.1`) |
 | `--ca-dir` | Guardian data directory (default: `~/.guardian`) |
+| `--skip-cert-regen` | Reuse existing on-disk CA instead of rotating each MITM run |
 | `--filter` | Connect-hook JS expression (`sa_family`, `addr`, `port`, `host`) |
 | `--ignored-ports` | TCP ports to leave unhooked when `--filter` is unset (comma-separated) |
 | `--config` | Extra config file path |

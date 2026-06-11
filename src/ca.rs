@@ -7,9 +7,32 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::config::Settings;
+use crate::system_trust::TrustStore;
 
 pub const ROOT_CA_PEM: &str = "rootCA.pem";
 pub const ROOT_CA_KEY_PEM: &str = "rootCA-key.pem";
+
+fn ca_installed_in_any_store(ca_dir: &Path, stores: &[TrustStore]) -> bool {
+    #[cfg(test)]
+    if std::env::var_os("GUARDIAN_TEST_CA_INSTALLED").is_some() {
+        return true;
+    }
+    stores
+        .iter()
+        .any(|s| crate::system_trust::is_store_installed(*s, ca_dir).unwrap_or(false))
+}
+
+pub fn prepare_mitm_ca(
+    ca_dir: &Path,
+    stores: &[TrustStore],
+    skip_regen: bool,
+) -> Result<proxyapi::ca::Ssl> {
+    if !skip_regen && !ca_installed_in_any_store(ca_dir, stores) {
+        let _ = fs::remove_file(ca_dir.join(ROOT_CA_KEY_PEM));
+        let _ = fs::remove_file(ca_dir.join(ROOT_CA_PEM));
+    }
+    load_or_generate_ca(ca_dir)
+}
 
 pub fn load_or_generate_ca(ca_dir: &Path) -> Result<proxyapi::ca::Ssl> {
     use proxyapi::ca::Ssl;
@@ -302,6 +325,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::CaTrust;
+    use crate::system_trust::TrustStore;
 
     #[test]
     fn env_for_child_skips_existing_pem_vars() {
@@ -426,6 +450,7 @@ mod tests {
             args: vec![],
             trust_stores: vec!["system".into()],
             upstream_tls: Default::default(),
+            skip_cert_regen: false,
         };
         let mut trust = CaTrust::from_settings(&settings);
         let err = trust.ensure_artifacts(&settings).unwrap_err();
@@ -474,6 +499,7 @@ mod tests {
             args: vec![],
             trust_stores: vec!["system".into()],
             upstream_tls: Default::default(),
+            skip_cert_regen: false,
         };
         let prev = std::env::var_os("JAVA_HOME");
         std::env::set_var("JAVA_HOME", &jdk);
@@ -540,6 +566,7 @@ mod tests {
             args: vec![],
             trust_stores: vec!["system".into()],
             upstream_tls: Default::default(),
+            skip_cert_regen: false,
         };
         let mut trust = CaTrust::from_settings(&settings);
         trust.ensure_artifacts(&settings).unwrap();
@@ -584,6 +611,56 @@ mod tests {
             .iter()
             .any(|p| { p == "CURL_CA_BUNDLE=/tmp/guardian-ca/guardian-ca-bundle.pem" }));
         assert!(pairs.iter().any(|p| p == "NODE_OPTIONS=--use-openssl-ca"));
+    }
+
+    fn ca_fingerprint(ca_dir: &std::path::Path) -> Vec<u8> {
+        crate::system_trust::ca_sha256_fingerprint(ca_dir).unwrap()
+    }
+
+    #[test]
+    fn prepare_mitm_ca_rotates_when_not_in_trust_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let stores = [TrustStore::System];
+        super::prepare_mitm_ca(dir.path(), &stores, false).unwrap();
+        let first = ca_fingerprint(dir.path());
+        super::prepare_mitm_ca(dir.path(), &stores, false).unwrap();
+        let second = ca_fingerprint(dir.path());
+        assert_ne!(first, second, "expected a fresh CA on each run");
+    }
+
+    #[test]
+    fn prepare_mitm_ca_reuses_when_skip_regen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let stores = [TrustStore::System];
+        super::prepare_mitm_ca(dir.path(), &stores, true).unwrap();
+        let first = ca_fingerprint(dir.path());
+        super::prepare_mitm_ca(dir.path(), &stores, true).unwrap();
+        let second = ca_fingerprint(dir.path());
+        assert_eq!(first, second, "skip_regen should reuse on-disk CA");
+    }
+
+    #[test]
+    fn prepare_mitm_ca_reuses_when_trust_store_reports_installed() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = tempfile::TempDir::new().unwrap();
+        let stores = [TrustStore::System];
+        super::prepare_mitm_ca(dir.path(), &stores, false).unwrap();
+        let first = ca_fingerprint(dir.path());
+
+        let prev = std::env::var_os("GUARDIAN_TEST_CA_INSTALLED");
+        std::env::set_var("GUARDIAN_TEST_CA_INSTALLED", "1");
+        super::prepare_mitm_ca(dir.path(), &stores, false).unwrap();
+        if let Some(value) = prev {
+            std::env::set_var("GUARDIAN_TEST_CA_INSTALLED", value);
+        } else {
+            std::env::remove_var("GUARDIAN_TEST_CA_INSTALLED");
+        }
+
+        assert_eq!(
+            ca_fingerprint(dir.path()),
+            first,
+            "installed CA should not be rotated"
+        );
     }
 
     #[cfg(unix)]

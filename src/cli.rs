@@ -44,6 +44,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub ca_dir: Option<PathBuf>,
 
+    /// Reuse existing on-disk CA instead of rotating each MITM run.
+    #[arg(long, global = true)]
+    pub skip_cert_regen: bool,
+
     /// JS expression for connect() filter (sa_family, addr, port, host).
     #[arg(long, global = true)]
     pub filter: Option<String>,

@@ -391,6 +391,7 @@ mod tests {
             args: vec![],
             trust_stores: vec!["system".into()],
             upstream_tls: Default::default(),
+            skip_cert_regen: false,
         }
     }
 

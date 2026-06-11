@@ -24,7 +24,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::ca::{load_or_generate_ca, CaTrust};
+use crate::ca::{prepare_mitm_ca, CaTrust};
 use crate::cli::{Cli, Commands};
 use crate::config::{
     is_payload_mode, resolve_ca_dir, resolve_payload_settings, resolve_settings,
@@ -61,7 +61,11 @@ async fn run_mitm_filtered(settings: Settings) -> Result<i32> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut ca_trust = CaTrust::from_settings(&settings);
-    load_or_generate_ca(&settings.ca_dir)?;
+    prepare_mitm_ca(
+        &settings.ca_dir,
+        &TrustStore::parse_all(&settings.trust_stores),
+        settings.skip_cert_regen,
+    )?;
     ca_trust
         .ensure_artifacts(&settings)
         .context("failed to prepare CA trust artifacts")?;

@@ -30,7 +30,7 @@ Child app ──TLS──► upstream server
 
 ### What happens to certificates
 
-- On first use, Guardian generates (or loads) a **root CA** under `~/.guardian` by default (`--ca-dir` / `GUARDIAN_CA_DIR`).
+- MITM runs with `--tpf` write a **root CA** under `~/.guardian` by default (`--ca-dir` / `GUARDIAN_CA_DIR`). Without `install-system`, Guardian **generates a fresh CA on each launch** (rotation). After `install-system`, or with `--skip-cert-regen` / `skip_cert_regen` in config, the on-disk CA is reused.
 - For each intercepted TLS connection, Guardian presents a **leaf certificate** for the target hostname, signed by that root CA.
 - The child process must **trust the Guardian root CA** or TLS handshakes fail. Guardian injects trust via environment variables (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, Java truststore properties, etc.) and optionally via `guardian install-system`, which registers the CA in OS, browser, and Java trust stores.
 
@@ -62,11 +62,6 @@ Guardian is meant for **controlled environments** where an operator deliberately
 ### Current tolerance
 
 Full TLS decryption via a locally trusted root CA is **inherent to the MITM design** and is accepted as-is for the current CLI. Documentation may describe filtering or CA trust as optional to enable; that refers only to **whether you set** `--tpf` and run `install-system`, not to whether decryption occurs once those are in use.
-
-### Planned / possible future changes
-
-- **Scoped or ephemeral** CAs instead of a long-lived machine-wide root.
-- **Per-harness** or **per-session** trust instead of system-wide registration.
 
 ---
 
