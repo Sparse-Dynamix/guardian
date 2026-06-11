@@ -58,6 +58,8 @@ echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 | `--ignored-ports` | TCP ports to leave unhooked when `--filter` is unset (comma-separated) |
 | `--config` | Extra config file path |
 
+Document subcommands (print to stdout): `legal-notes` ([NOTICE.txt](NOTICE.txt)), `license-notes` ([LICENSE](LICENSE)), `security-notes` ([SECURITY.md](SECURITY.md)).
+
 ## Trypanophobe filter API
 
 `POST <tpf_url>` with the **raw response bytes** as the body (never truncated).
@@ -73,7 +75,10 @@ echo <payload> | guardian [OPTIONS] --tpf URL # payload mode (piped stdin)
 | `install-system` | Yes | Register the Guardian CA in OS / browser / Java trust stores |
 | `remove-system` | Yes | Remove the Guardian CA |
 | `check-system` | No | Report whether the CA is trusted |
+| `legal-notes` | No | Print legal notice and third-party attributions |
+| `license-notes` | No | Print GPL license text |
+| `security-notes` | No | Print security model |
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE). Legal notice, disclaimers, and third-party licenses: [NOTICE.txt](NOTICE.txt).

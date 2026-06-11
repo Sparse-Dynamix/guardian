@@ -11,15 +11,9 @@
 
 It's a truststore (not a keystore), so the blast radius is limited, but the password ends up in `JAVA_TOOL_OPTIONS` / process args, visible to any local process via `ps`. Minor, but flag it.
 
-**8. The whole model rests on trusting a root CA + decrypting all TLS.** That's inherent to MITM and fine as a design — but the README's "optional" framing undersells it. For a beta you need a prominent, blunt SECURITY.md explaining: a root CA is installed, all TLS is decrypted and sent to the filter URL, and what the threat model is. Right now there's no SECURITY.md and `LICENSE`/`NOTICES` are the only governance files. There's also no `.github/` (no CI workflows, no issue templates) despite `package.json` pointing at GitHub issues — meaning your strong test/smoke/coverage scripts don't run on PRs.
-
-**9. Filter endpoint sees plaintext of everything, over plain HTTP in all examples.** Every example uses `http://`. If the filter is remote, you're shipping decrypted traffic in cleartext to it. At minimum the docs should push HTTPS for `--tpf` and note the trust implications.
-
 ---
 
 ## Product / design risks for the AI-harness use case
-
-**11. Cert pinning will hit real agents.** Many modern clients pin; `AGENTS.md` honestly lists these as limitations. That's good, but for a public beta you should expect a meaningful fraction of "it just hangs / fails" reports from exactly these. Some explicit detection + a clear error ("looks like this client pins certs, Guardian can't intercept") would massively cut support load.
 
 **12. Version inconsistency.** `Cargo.toml` is `0.1.0`, `package.json` is `1.0.0`, and the code is littered with "v1" / "pre 1.0" language. Pick one story before a public release.
 
@@ -38,4 +32,4 @@ It's a truststore (not a keystore), so the blast radius is limited, but the pass
 **Engineering quality: strong. Beta-readiness: not yet.** If I had to gate it, the blockers are:
 
 2. Lock down the CA private key permissions (#6) — non-negotiable for a security tool.
-4. Add a SECURITY.md + CI workflow and reconcile versioning (#8, #12).
+4. Add a CI workflow and reconcile versioning (#12).

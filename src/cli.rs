@@ -68,6 +68,15 @@ pub enum Commands {
     /// Check whether the Guardian CA is installed in system trust stores.
     #[command(name = "check-system")]
     CheckSystem(SystemOpts),
+    /// Print legal notice and third-party attributions (NOTICE.txt).
+    #[command(name = "legal-notes")]
+    LegalNotes,
+    /// Print the Guardian GPL license text (LICENSE).
+    #[command(name = "license-notes")]
+    LicenseNotes,
+    /// Print the security model (SECURITY.md).
+    #[command(name = "security-notes")]
+    SecurityNotes,
 }
 
 #[derive(Debug, Parser, Clone)]
@@ -176,5 +185,23 @@ mod tests {
         ])
         .unwrap();
         assert!(cli.trypanophobe_swap);
+    }
+
+    #[test]
+    fn legal_notes_subcommand_parses() {
+        let cli = Cli::try_parse_from(["guardian", "legal-notes"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::LegalNotes)));
+    }
+
+    #[test]
+    fn license_notes_subcommand_parses() {
+        let cli = Cli::try_parse_from(["guardian", "license-notes"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::LicenseNotes)));
+    }
+
+    #[test]
+    fn security_notes_subcommand_parses() {
+        let cli = Cli::try_parse_from(["guardian", "security-notes"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::SecurityNotes)));
     }
 }

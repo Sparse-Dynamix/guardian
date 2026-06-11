@@ -1,9 +1,0 @@
-# Third-party notices
-
-## mkcert
-
-Guardian embeds the mkcert binary (https://github.com/FiloSottile/mkcert) for
-`install-system` and `remove-system` trust-store operations.
-
-Copyright (c) 2018 The mkcert Authors
-SPDX-License-Identifier: BSD-3-Clause

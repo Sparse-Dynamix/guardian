@@ -7,6 +7,7 @@ mod frida_ext;
 mod injector;
 mod install;
 mod mkcert;
+mod notes;
 mod port;
 mod proxy;
 mod signals;
@@ -167,6 +168,10 @@ async fn async_main() -> Result<i32> {
     let cli = Cli::parse();
 
     match &cli.command {
+        Some(cmd @ (Commands::LegalNotes | Commands::LicenseNotes | Commands::SecurityNotes)) => {
+            notes::print(cmd);
+            Ok(0)
+        }
         Some(Commands::InstallSystem(opts)) => {
             let ca_dir = resolve_ca_dir(&cli)?;
             let stores = TrustStore::parse_all(&resolve_trust_stores(&cli, Some(opts)));

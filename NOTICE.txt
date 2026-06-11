@@ -1,0 +1,287 @@
+Guardian — legal notice and third-party attributions
+================================================================================
+
+This notice applies to the Guardian program you are running. It covers legal
+disclaimers, bundled components, and open-source license attributions.
+
+Related text from the same program:
+
+  guardian license-notes   Full GPL-3.0-or-later license text
+  guardian security-notes  Security model, threat assumptions, and limitations
+
+
+================================================================================
+PART 1 — LEGAL NOTICE AND DISCLAIMER
+================================================================================
+
+Guardian is software offered to help operators experiment with hardening AI
+agent harnesses. Read this notice before installing or running Guardian.
+
+Purpose: ecosystem hardening, not a safety product
+--------------------------------------------------------------------------------
+
+Guardian is an exercise in hardening the ecosystem around AI harnesses. It
+explores techniques — TLS interception, content filtering, payload gating —
+that may help operators reason about and constrain untrusted agent traffic.
+
+It is not a promise, a guarantee, or a certification of safety. Guardian does
+not warrant that any harness, workflow, organization, or end user will be
+protected from harm, data loss, compromise, regulatory violation, or any other
+adverse outcome. Effectiveness depends entirely on how you configure it, what
+filter you attach, what child process you run, and the environment in which you
+deploy it.
+
+Nothing said about Guardian — in other printed notices, online material, or
+community discussion — should be read as assurance that a particular deployment
+is secure, compliant, or fit for production.
+
+No guarantees
+--------------------------------------------------------------------------------
+
+To the fullest extent permitted by applicable law, Guardian — including its
+source code, build artifacts, binaries, documentation, configuration
+defaults, and any derivatives — is provided without any guarantee of any kind,
+whether express, implied, statutory, or otherwise.
+
+Without limiting the foregoing, the maintainers, contributors, copyright
+holders, and distributors of Guardian ("the project") guarantee nothing,
+including but not limited to:
+
+  - That Guardian will operate correctly, without error, or without interruption.
+  - That Guardian will detect, block, or filter malicious, unsafe, or
+    policy-violating content.
+  - That Guardian will prevent data exfiltration, prompt injection, tool abuse,
+    or other agent misbehavior.
+  - That TLS interception will succeed for any given client, protocol, or
+    network path.
+  - That use of Guardian complies with any law, regulation, contract, or
+    organizational policy applicable to you.
+  - That Guardian is suitable for any particular purpose, including production,
+    regulated, or safety-critical use.
+
+Any statements about intended behavior (including `guardian security-notes`)
+describe design goals and current implementation, not commitments or service
+levels.
+
+Your responsibility
+--------------------------------------------------------------------------------
+
+You alone decide whether to use Guardian and you bear full responsibility for
+that decision and for everything that happens as a result.
+
+By obtaining, installing, or running Guardian, you acknowledge that:
+
+  1. You understand what Guardian does, including installation of a local root
+     CA, TLS decryption, Frida process instrumentation, and plaintext
+     disclosure to a --tpf filter endpoint (see `guardian security-notes`).
+  2. You are solely responsible for configuring --tpf, trust stores, child
+     processes, network paths, and access controls in a manner appropriate to
+     your threat model and legal obligations.
+  3. You will not rely on Guardian as your only or primary security control.
+  4. You have authority to intercept, inspect, and forward the traffic and
+     payloads you subject to Guardian in your jurisdiction and under your
+     contracts.
+
+If you do not accept these conditions, do not use Guardian.
+
+Limitation of liability
+--------------------------------------------------------------------------------
+
+To the maximum extent permitted by applicable law, the project and its
+maintainers, contributors, copyright holders, and distributors shall not be
+liable for any damages, losses, costs, or claims arising out of or related to:
+
+  - Your use or inability to use Guardian.
+  - Any child process, harness, agent, or third-party service run under or
+    alongside Guardian.
+  - Any content allowed, blocked, modified, leaked, or lost through Guardian or
+    your filter endpoint.
+  - Installation or trust of the Guardian root CA on any system or user account.
+  - Misconfiguration, outage, or compromise of your --tpf filter or its
+    transport.
+  - Certificate pinning failures, bypassed traffic, or traffic Guardian does
+    not intercept.
+  - Alleged or actual violation of privacy, wiretap, computer-fraud, export, or
+    sector-specific regulations.
+
+This limitation applies whether liability is asserted in contract, tort
+(including negligence), strict liability, or any other theory, even if the
+project has been advised of the possibility of such damages.
+
+Where liability cannot be fully excluded, it is limited to the greatest extent
+allowed by law. In no event shall aggregate liability exceed zero monetary
+amount where permitted, or the minimum amount required by applicable law.
+
+You agree that your use of Guardian and any consequences thereof cannot be held
+against the maintainers of the code and binaries produced — including civil
+claims, regulatory actions sought against the project in your stead, or demands
+that maintainers indemnify or compensate you for outcomes of your deployment
+choices.
+
+No professional advice
+--------------------------------------------------------------------------------
+
+Guardian documentation is technical reference material, not legal advice,
+security consulting, compliance guidance, or operational certification. Consult
+qualified professionals for questions about law, regulation, insurance, and
+organizational risk acceptance before deploying MITM tooling.
+
+Relationship to the GPL
+--------------------------------------------------------------------------------
+
+Guardian is licensed under the GNU General Public License v3.0 or later. Run
+`guardian license-notes` for the full license text. This notice supplements
+the GPL; it does not replace it. Where the GPL provides warranty disclaimers
+and limitations of liability (GPL sections 15–17), those terms also apply. If
+anything in this document conflicts with mandatory rights granted by the GPL in
+your jurisdiction, the GPL governs to the extent of that conflict.
+
+Redistributors and modifiers must comply with the GPL and should retain this
+notice where they convey Guardian or substantial portions of it.
+
+Trademarks and changes
+--------------------------------------------------------------------------------
+
+"Guardian" and associated project names refer to this open-source software.
+Third-party names and trademarks belong to their respective owners. No
+endorsement is implied.
+
+This notice may be updated between releases without prior announcement. The
+text embedded in the Guardian binary you are running applies to your copy unless
+a different agreement explicitly supersedes it.
+
+Summary
+--------------------------------------------------------------------------------
+
+  Safety / security  — No guarantee. Experimental hardening aid only.
+  Correctness        — No guarantee. Software may fail or behave unexpectedly.
+  Liability          — Excluded and limited to the fullest extent permitted by law.
+  Accountability     — You assume all risk; maintainers are not accountable for
+                       your use or its consequences.
+  Intent             — Ecosystem hardening exercise, not a commercial safety
+                       product or promise.
+
+If you need assured protection, contractual remedies, or certified controls, use
+products and processes designed for that purpose — not Guardian alone.
+
+
+================================================================================
+PART 2 — GUARDIAN PROJECT LICENSE
+================================================================================
+
+  Component : Guardian
+  SPDX      : GPL-3.0-or-later
+  Full text : Run `guardian license-notes`
+
+
+================================================================================
+PART 3 — BUNDLED AND RUNTIME THIRD-PARTY COMPONENTS
+================================================================================
+
+These components are materially significant to this Guardian binary. Each is
+subject to its own license terms and disclaimers. Guardian does not control and
+is not responsible for third-party filter services you point --tpf at, or child
+applications you execute.
+
+mkcert (embedded)
+--------------------------------------------------------------------------------
+
+  Use       : `install-system` and `remove-system` trust-store operations
+  Source    : https://github.com/FiloSottile/mkcert
+  Shipped   : Embedded in the Guardian binary; extracted under --ca-dir when
+              needed for CA trust-store management
+  Copyright : Copyright (c) 2018 The mkcert Authors
+  SPDX      : BSD-3-Clause
+
+Frida (runtime instrumentation)
+--------------------------------------------------------------------------------
+
+  Use       : connect() hooking and child-process instrumentation when --tpf is
+              set in MITM mode
+  Project   : https://frida.re
+  Bindings  : https://github.com/frida/frida-rust
+  Shipped   : libfrida-core (shared library or DLL) loaded at runtime
+  SPDX      : wxWindows Library Licence
+
+Proxelar (embedded MITM proxy)
+--------------------------------------------------------------------------------
+
+  Use       : Forward MITM proxy, TLS termination, content filtering integration
+  Upstream  : https://github.com/emanuele-em/proxelar
+  SPDX      : MIT
+
+OpenSSL (TLS stack)
+--------------------------------------------------------------------------------
+
+  Use       : TLS and certificate handling inside the embedded proxy
+  Upstream  : https://www.openssl.org
+  SPDX      : Apache-2.0 (Rust bindings); OpenSSL library under OpenSSL and
+              SSLeay licenses
+
+ring / rustls / webpki-roots (TLS for Guardian HTTP client and proxy legs)
+--------------------------------------------------------------------------------
+
+  Use       : rustls TLS for Guardian's --tpf HTTP client and parts of the
+              proxy TLS stack
+  ring      : https://github.com/briansmith/ring — Apache-2.0 AND ISC
+  rustls    : https://github.com/rustls/rustls — Apache-2.0 OR ISC OR MIT
+  webpki-roots : https://github.com/rustls/webpki-roots — CDLA-Permissive-2.0
+
+Other direct runtime libraries (selected)
+--------------------------------------------------------------------------------
+
+  kill_tree   : MIT — https://github.com/oneofthezombies/kill-tree
+  privilege   : MIT — https://github.com/shellrow/privilege
+  port_check  : MIT
+  which       : MIT OR Apache-2.0
+  x509-parser : Apache-2.0 OR MIT — https://github.com/rusticata/x509-parser
+  reqwest     : Apache-2.0 OR MIT — https://github.com/seanmonstar/reqwest
+  tokio       : MIT — https://github.com/tokio-rs/tokio
+  hyper       : MIT — https://github.com/hyperium/hyper
+  clap        : Apache-2.0 OR MIT
+  moka        : Apache-2.0 OR MIT — https://github.com/moka-rs/moka
+  encoding_rs : (Apache-2.0 OR MIT) AND BSD-3-Clause
+  subtle      : BSD-3-Clause — https://github.com/dalek-cryptography/subtle
+  option-ext  : MPL-2.0 — https://github.com/soc/option-ext
+  aws-lc-rs / aws-lc-sys : AWS-LC cryptographic primitives (transitive via TLS
+              stack) — composite Apache-2.0 / ISC / MIT / BSD-3-Clause terms;
+              see https://github.com/aws/aws-lc-rs
+
+
+================================================================================
+PART 4 — OPEN-SOURCE COMPONENTS IN THIS BINARY (BY LICENSE)
+================================================================================
+
+Production open-source components linked into this Guardian executable:
+
+===== BEGIN AUTO-GENERATED: rust-dependency-licenses =====
+(Apache-2.0 OR MIT) AND BSD-3-Clause (1): encoding_rs
+(MIT OR Apache-2.0) AND Apache-2.0 (1): moka
+(MIT OR Apache-2.0) AND Unicode-3.0 (1): unicode-ident
+Apache-2.0 (2): openssl, sync_wrapper
+Apache-2.0 / MIT (1): fnv
+Apache-2.0 AND ISC (1): ring
+Apache-2.0 OR BSL-1.0 (1): ryu
+Apache-2.0 OR ISC OR MIT (3): hyper-rustls, rustls, rustls-native-certs
+Apache-2.0 OR MIT (18): async-lock, atomic-waker, concurrent-queue, equivalent, event-listener, event-listener-strategy, fastrand, http-serde, idna_adapter, indexmap, parking, pin-project-lite, portable-atomic, rustc-hash, utf8_iter, utf8parse, uuid, zeroize
+Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (14): linux-raw-sys, rustix, wasi, wasip2, wasip3, wasm-encoder, wasm-metadata, wasmparser, wit-bindgen, wit-bindgen-core, wit-bindgen-rust, wit-bindgen-rust-macro, wit-component, wit-parser
+BSD-2-Clause OR Apache-2.0 OR MIT (2): zerocopy, zerocopy-derive
+BSD-3-Clause (1): subtle
+CC0-1.0 (1): tiny-keccak
+CDLA-Permissive-2.0 (1): webpki-roots
+GPL-3.0-or-later (1): guardian
+ISC (3): json5, rustls-webpki, untrusted
+ISC AND (Apache-2.0 OR ISC) (1): aws-lc-rs
+ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) (1): aws-lc-sys
+MIT (45): bytes, convert_case, crunchy, data-encoding, generic-array, h2, http-body, http-body-util, hyper, hyper-util, kill_tree, libredox, mio, nix, nom, openssl-sys, ordered-multimap, port_check, privilege, proxyapi, proxyapi_models, redox_syscall, redox_users, rust-ini, schannel, slab, strsim, synstructure, tokio, tokio-macros, tokio-native-tls, tokio-tungstenite, tokio-util, tower, tower-http, tower-layer, tower-service, tracing, tracing-attributes, tracing-core, try-lock, want, which, winnow, zmij
+MIT OR Apache-2.0 (162): anstream, anstyle, anstyle-parse, anstyle-query, anstyle-wincon, anyhow, asn1-rs, asn1-rs-derive, async-trait, base64, bitflags, block-buffer, bstr, bumpalo, cfg-if, chrono, clap, clap_builder, clap_derive, clap_lex, colorchoice, config, const-random, const-random-macro, core-foundation, core-foundation-sys, cpufeatures, crossbeam-channel, crossbeam-epoch, crossbeam-utils, crypto-common, deranged, digest, dirs, dirs-sys, displaydoc, dlv-list, either, erased-serde, errno, form_urlencoded, futures-channel, futures-core, futures-io, futures-macro, futures-sink, futures-task, futures-util, getrandom, hashbrown, hashlink, heck, hex, home, http, httparse, httpdate, iana-time-zone, iana-time-zone-haiku, idna, ipnet, is_terminal_polyfill, itoa, js-sys, lazy_static, leb128fmt, libc, lock_api, log, native-tls, num-bigint, num-conv, num-integer, num-traits, oid-registry, once_cell, once_cell_polyfill, openssl-probe, parking_lot, parking_lot_core, percent-encoding, pest, pest_derive, pest_generator, pest_meta, powerfmt, ppv-lite86, prettyplease, proc-macro2, quinn, quinn-proto, quinn-udp, quote, rand, rand_chacha, rand_core, regex-automata, regex-syntax, reqwest, ron, rustls-pki-types, scopeguard, security-framework, security-framework-sys, semver, serde, serde-untagged, serde_core, serde_derive, serde_json, serde_spanned, sha1, sha2, signal-hook-registry, smallvec, socket2, stable_deref_trait, syn, tempfile, thiserror, thiserror-impl, time, time-core, time-macros, tokio-rustls, toml, toml_datetime, toml_parser, tungstenite, typeid, typenum, ucd-trie, unicode-segmentation, unicode-xid, url, utf-8, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, web-sys, web-time, windows, windows-core, windows-implement, windows-interface, windows-link, windows-result, windows-strings, windows-sys, windows-targets, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm, windows_x86_64_msvc, x509-parser, yaml-rust2
+MIT OR Apache-2.0 OR LGPL-2.1-or-later (1): r-efi
+MIT OR Apache-2.0 OR Zlib (2): lru-slab, tinyvec_macros
+MIT/Apache-2.0 (13): android_system_properties, arraydeque, asn1-rs-impl, der-parser, foreign-types, foreign-types-shared, id-arena, minimal-lexical, openssl-macros, pathdiff, rusticata-macros, serde_urlencoded, tagptr
+MPL-2.0 (1): option-ext
+Unicode-3.0 (18): icu_collections, icu_locale_core, icu_normalizer, icu_normalizer_data, icu_properties, icu_properties_data, icu_provider, litemap, potential_utf, tinystr, writeable, yoke, yoke-derive, zerofrom, zerofrom-derive, zerotrie, zerovec, zerovec-derive
+Unlicense OR MIT (2): aho-corasick, memchr
+Zlib (1): foldhash
+Zlib OR Apache-2.0 OR MIT (1): tinyvec
+wxWindows (2): frida, frida-sys
+===== END AUTO-GENERATED: rust-dependency-licenses =====

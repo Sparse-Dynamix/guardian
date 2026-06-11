@@ -6,6 +6,9 @@ license = "GPL-3.0-or-later"
 description = "Harden AI harnesses by filtering web traffic and tool-call payloads"
 build = "build.rs"
 
+[build-dependencies]
+cargo_metadata = "0.18"
+
 [dependencies]
 frida = { version = "0.17", features = ["auto-download"] }
 frida-sys = "0.17"
