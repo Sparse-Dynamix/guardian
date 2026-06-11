@@ -1,4 +1,5 @@
 mod ca;
+mod child_exit;
 mod cli;
 mod config;
 mod filter;

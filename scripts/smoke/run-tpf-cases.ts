@@ -159,9 +159,6 @@ function childArgs(
   if (config.childWrapper) {
     return [config.childWrapper, ...curl];
   }
-  if (config.childShell) {
-    return [...config.childShell, curl.join(" ")];
-  }
   return curl;
 }
 

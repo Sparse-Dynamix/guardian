@@ -11,6 +11,7 @@ use kill_tree::Config;
 use serde_json::json;
 
 use crate::ca::CaTrust;
+use crate::child_exit::ChildExitWaiter;
 use crate::config::Settings;
 use crate::frida_ext::{
     connect_device_child_signals, connect_session_detached, enable_child_gating,
@@ -86,7 +87,7 @@ fn instrument<'a>(
     let detached = connect_session_detached(&session, move |reason| {
         if is_process_replaced(reason) {
             let _ = tx_replace.send(ProcessEvent::ProcessReplaced(pid));
-        } else if pid == root_pid {
+        } else if pid == root_pid && matches!(probe_pid(pid), PidProbe::Gone) {
             let _ = tx_detach.send(ProcessEvent::ChildRemoved(pid));
         }
     });
@@ -206,8 +207,11 @@ pub fn run_injection_coordinated(
     )
     .context("failed to instrument root process")?;
 
+    let exit_waiter = ChildExitWaiter::start(root_pid)?;
+
     let exit_code = wait_for_root(
         root_pid,
+        exit_waiter,
         &event_rx,
         &interrupt_rx,
         &device,
@@ -274,12 +278,13 @@ fn is_authoritative_root_exit(event: &ProcessEvent, root_pid: u32) -> bool {
 fn probe_pid(pid: u32) -> PidProbe {
     match try_wait_pid(pid) {
         WaitStatus::StillRunning => PidProbe::Running,
-        WaitStatus::Exited(_) | WaitStatus::Error(_) => PidProbe::Gone,
+        WaitStatus::NotRunning | WaitStatus::Error(_) => PidProbe::Gone,
     }
 }
 
 fn wait_for_root<'a>(
     root_pid: u32,
+    exit_waiter: ChildExitWaiter,
     event_rx: &std::sync::mpsc::Receiver<ProcessEvent>,
     interrupt_rx: &std::sync::mpsc::Receiver<()>,
     device: &'a frida::Device<'a>,
@@ -288,11 +293,21 @@ fn wait_for_root<'a>(
     event_tx: &Sender<ProcessEvent>,
     process_poll_interval_ms: u64,
 ) -> Result<i32> {
+    let poll = Duration::from_millis(process_poll_interval_ms);
+    let mut awaiting_exit = false;
+
     loop {
+        if interrupt_rx.try_recv().is_ok() {
+            terminate_process_tree(root_pid);
+            sessions.clear();
+            return Ok(130);
+        }
+
         while let Ok(event) = event_rx.try_recv() {
             if is_authoritative_root_exit(&event, root_pid) {
                 sessions.remove(&root_pid);
-                return Ok(0);
+                awaiting_exit = true;
+                break;
             }
             match event {
                 ProcessEvent::ChildRemoved(pid) => {
@@ -312,7 +327,14 @@ fn wait_for_root<'a>(
             }
         }
 
-        match interrupt_rx.recv_timeout(Duration::from_millis(process_poll_interval_ms)) {
+        if awaiting_exit {
+            if let Some(code) = exit_waiter.try_recv_exit(poll)? {
+                return Ok(code);
+            }
+            continue;
+        }
+
+        match interrupt_rx.recv_timeout(poll) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {
                 terminate_process_tree(root_pid);
                 sessions.clear();
@@ -324,8 +346,8 @@ fn wait_for_root<'a>(
 }
 
 enum WaitStatus {
-    Exited(i32),
     StillRunning,
+    NotRunning,
     Error(std::io::Error),
 }
 
@@ -338,7 +360,7 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
         }
         let err = std::io::Error::last_os_error();
         match err.raw_os_error() {
-            Some(libc::ESRCH) => WaitStatus::Exited(0),
+            Some(libc::ESRCH) => WaitStatus::NotRunning,
             Some(libc::EPERM) => WaitStatus::StillRunning,
             _ => WaitStatus::Error(err),
         }
@@ -357,7 +379,7 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
         if handle.is_null() {
             let err = std::io::Error::last_os_error();
             if matches!(err.raw_os_error(), Some(87) | Some(5)) {
-                return WaitStatus::Exited(0);
+                return WaitStatus::NotRunning;
             }
             return WaitStatus::Error(err);
         }
@@ -371,7 +393,7 @@ fn try_wait_pid(pid: u32) -> WaitStatus {
         if code == STILL_ACTIVE {
             return WaitStatus::StillRunning;
         }
-        WaitStatus::Exited(code as i32)
+        WaitStatus::NotRunning
     }
 }
 
@@ -515,8 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn try_wait_missing_pid_exited() {
-        assert!(matches!(try_wait_pid(4_000_000), WaitStatus::Exited(0)));
+    fn try_wait_missing_pid_not_running() {
+        assert!(matches!(try_wait_pid(4_000_000), WaitStatus::NotRunning));
     }
 
     #[test]

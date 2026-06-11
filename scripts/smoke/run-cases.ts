@@ -193,11 +193,8 @@ async function runInterrupt(servers: TestServers): Promise<RunResult> {
     childProgram = resolveExecutable("cmd.exe");
     childArgs = ["/c", "ping -n 60 127.0.0.1 >NUL"];
   } else {
-    scriptPath = path.join(dir, `guardian-smoke-sleep-${process.pid}.sh`);
-    fs.writeFileSync(scriptPath, "#!/bin/sh\nsleep 60 &\nwait\n");
-    fs.chmodSync(scriptPath, 0o755);
-    childProgram = resolveExecutable("sh");
-    childArgs = [scriptPath];
+    childProgram = resolveExecutable("sleep");
+    childArgs = ["60"];
   }
 
   const child = spawnProcess(

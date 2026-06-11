@@ -146,7 +146,11 @@ pub fn load_file_settings(config_path: Option<&Path>) -> Result<FileSettings> {
         builder = builder.add_source(File::from(path));
     }
 
-    builder = builder.add_source(Environment::with_prefix("GUARDIAN").separator("_"));
+    builder = builder.add_source(
+        Environment::with_prefix("GUARDIAN")
+            .try_parsing(true)
+            .ignore_empty(true),
+    );
 
     let cfg = builder.build().context("failed to build configuration")?;
     cfg.try_deserialize()
@@ -235,12 +239,10 @@ pub fn resolve_payload_settings(cli: &Cli) -> Result<Settings> {
         .clone()
         .unwrap_or_else(default_trust_stores);
 
-    // Read directly from the environment: `Environment::separator("_")` maps
-    // GUARDIAN_UPSTREAM_TLS to nested `upstream.tls`, not flat `upstream_tls`.
-    let upstream_tls = std::env::var("GUARDIAN_UPSTREAM_TLS")
-        .ok()
-        .or_else(|| file.upstream_tls.clone())
-        .map(|v| UpstreamTlsConfig::from_str(v.trim()))
+    let upstream_tls = file
+        .upstream_tls
+        .as_deref()
+        .map(UpstreamTlsConfig::from_str)
         .transpose()
         .map_err(|e| anyhow::anyhow!("invalid upstream_tls: {e}"))?
         .unwrap_or_default();
@@ -533,6 +535,82 @@ mod tests {
         let settings = resolve_settings(&cli).unwrap();
         assert!(settings.filter.contains("8080"));
         assert!(settings.filter.contains("22"));
+    }
+
+    fn with_env_var<F>(key: &str, value: Option<&str>, f: F)
+    where
+        F: FnOnce(),
+    {
+        let prev = std::env::var_os(key);
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        f();
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn minimal_config_cli(dir: &TempDir) -> Cli {
+        let cfg_path = dir.path().join("guardian.toml");
+        std::fs::write(&cfg_path, "bind = \"127.0.0.1\"\n").unwrap();
+        Cli::try_parse_from([
+            "guardian",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--payload",
+            "x",
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn env_trypanophobe_filter() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        with_env_var(
+            "GUARDIAN_TRYPANOPHOBE_FILTER",
+            Some("http://127.0.0.1:9/pass"),
+            || {
+                let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
+                assert_eq!(
+                    settings.trypanophobe_filter.as_deref(),
+                    Some("http://127.0.0.1:9/pass")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn env_filter_timeout_secs() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        with_env_var("GUARDIAN_FILTER_TIMEOUT_SECS", Some("42"), || {
+            let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
+            assert_eq!(settings.filter_timeout_secs, 42);
+        });
+    }
+
+    #[test]
+    fn env_bind() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        with_env_var("GUARDIAN_BIND", Some("10.0.0.5"), || {
+            let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
+            assert_eq!(settings.bind, Ipv4Addr::new(10, 0, 0, 5));
+        });
+    }
+
+    #[test]
+    fn env_upstream_tls() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        with_env_var("GUARDIAN_UPSTREAM_TLS", Some("insecure"), || {
+            let settings = resolve_payload_settings(&minimal_config_cli(&dir)).unwrap();
+            assert_eq!(settings.upstream_tls, UpstreamTlsConfig::Insecure);
+        });
     }
 
     #[test]
