@@ -45,7 +45,8 @@ export async function ensurePortableJdk(
 
   if (spec.extract === "tar") {
     const archive = path.join(REPO_ROOT, ".cache", "temurin17-jdk.tar.gz");
-    await $`curl -fsSL -o ${archive} ${spec.url}`;
+    const curl = process.platform === "win32" ? "curl.exe" : "curl";
+    await $`${curl} -fsSL -o ${archive} ${spec.url}`;
     await $`tar -xzf ${archive} -C ${path.join(REPO_ROOT, ".cache")}`;
     fs.rmSync(archive, { force: true });
 
@@ -66,7 +67,8 @@ export async function ensurePortableJdk(
     }
   } else {
     const zip = path.join(REPO_ROOT, ".cache", "temurin17-jdk.zip");
-    await $`curl -fsSL -o ${zip} ${spec.url}`;
+    const curl = process.platform === "win32" ? "curl.exe" : "curl";
+    await $`${curl} -fsSL -o ${zip} ${spec.url}`;
     const extractRoot = path.join(REPO_ROOT, ".cache", "jdk-extract");
     fs.rmSync(extractRoot, { recursive: true, force: true });
     if (process.platform === "win32") {

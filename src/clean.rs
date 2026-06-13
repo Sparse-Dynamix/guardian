@@ -134,6 +134,17 @@ mod tests {
     }
 
     #[test]
+    fn try_remove_empty_dir_removes_when_empty() {
+        let dir = TempDir::new().unwrap();
+        let empty = dir.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let mut failed = Vec::new();
+        try_remove_empty_dir(&empty, &mut failed);
+        assert!(!empty.exists());
+        assert!(failed.is_empty());
+    }
+
+    #[test]
     fn run_clean_invokes_uninstall_when_privileged_with_stub_mkcert() {
         if !privileged() {
             return;
@@ -159,7 +170,6 @@ mod tests {
             None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
         }
 
-        #[cfg(unix)]
         result.expect("clean should succeed when privileged");
     }
 }
