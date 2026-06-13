@@ -4,12 +4,20 @@ import { cdRepo, REPO_ROOT } from "./repo.ts";
 
 if (process.platform === "win32") {
   usePowerShell();
+  $.bail = true;
+}
+
+export function cargoHome(): string {
+  if (process.env.CARGO_HOME) {
+    return process.env.CARGO_HOME;
+  }
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  return path.join(home, ".cargo");
 }
 
 function cargoExecutable(): string {
   if (process.platform === "win32") {
-    const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
-    return path.join(home, ".cargo", "bin", "cargo.exe");
+    return path.join(cargoHome(), "bin", "cargo.exe");
   }
   return "cargo";
 }

@@ -4,6 +4,7 @@ import { cdRepo, REPO_ROOT } from "./repo.ts";
 
 if (process.platform === "win32") {
   usePowerShell();
+  $.bail = true;
 }
 
 export function zxCliPath(): string {

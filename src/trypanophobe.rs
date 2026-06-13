@@ -236,7 +236,7 @@ mod tests {
         let body = body.to_string();
         let ct = content_type.map(str::to_string);
         thread::spawn(move || {
-            for _ in 0..32 {
+            for _ in 0..256 {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut buf = [0u8; 65536];
@@ -435,7 +435,12 @@ mod tests {
     #[tokio::test]
     async fn content_filter_http_replace_on_swap() {
         let url = spawn_mock(200, "replaced", Some("text/plain"), None);
-        thread::sleep(Duration::from_millis(200));
+        let port = url
+            .trim_start_matches("http://127.0.0.1:")
+            .split('/')
+            .next()
+            .expect("mock port");
+        wait_for_mock_ready(port.parse().expect("mock port"));
         let client = client_for(&url, true);
         let verdict = client
             .check_http_response(HttpFilterContext {

@@ -1,0 +1,65 @@
+name: nightly
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac-x64:
+    name: build (mac x64)
+    runs-on: [self-hosted, sparse-dynamics, macOS, X64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare environment
+        run: |
+          set -euo pipefail
+          echo "$HOME/.nvm/versions/node/v24.15.0/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - run: npm ci
+
+      - name: Smoke (patch, build, unit, integration)
+        run: npm run smoke
+
+      - name: Coverage (llvm-cov, 90% line gate)
+        run: npm run coverage
+
+  build-win-x64:
+    name: build (win x64)
+    runs-on: [self-hosted, sparse-dynamics, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell -executionpolicy bypass -command "$ErrorActionPreference='Stop'; . '{0}'"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare environment
+        run: |
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          echo "C:\Strawberry\perl\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files\nodejs" >> $env:GITHUB_PATH
+
+      - run: npm ci
+
+      - name: Smoke (patch, build, unit, integration)
+        run: npm run smoke
+
+      - name: Coverage (llvm-cov, 90% line gate)
+        run: npm run coverage

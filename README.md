@@ -26,21 +26,55 @@ Without `--tpf`, Wrapper mode runs the child directly and payload mode echoes st
 
 ## Quick start
 
-1. **Build** — see [AGENTS.md](AGENTS.md#build).
-2. **Optional — trust the Guardian CA** (Wrapper mode with `--tpf` only):
+**Downloaded a release?** See [Release binaries (`--tpf`)](#release-binaries-tpf).
+
+**Building from source:**
+
+1. Build — see [AGENTS.md](AGENTS.md#build).
+2. Trust the Guardian CA (recommended for HTTPS in browsers and system cert stores):
 
    ```bash
    sudo guardian install-system
    guardian check-system
    ```
 
-3. **Run with filtering:**
+3. Run with filtering:
 
    ```bash
-   guardian --tpf http://127.0.0.1:3000/pass -- curl -s https://httpbin.org/get
+   guardian --tpf http://127.0.0.1:3000/pass -- your-program --args
    ```
 
 Guardian stores its CA and config under `~/.guardian` by default.
+
+## Release binaries (`--tpf`)
+
+From [GitHub Releases](https://github.com/Sparse-Dynamix/guardian/releases): `guardian` (macOS) or `guardian.exe` (Windows; keep `frida-core.dll` beside it if included).
+
+```bash
+guardian --tpf https://filter.example/check -- your-program --args
+```
+
+### Without elevation
+
+**macOS (once, no `sudo`):** `codesign -s - -f --entitlements <plist> ./guardian` with `com.apple.security.get-task-allow` in the plist.
+
+**Windows:** allow SmartScreen/AV if prompted.
+
+Guardian injects CA trust into the **wrapped child** (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, etc.). Use `--skip-cert-regen` to reuse the same `~/.guardian` CA. Works for CLI tools and runtimes that honor those env vars; not for browsers or other apps using only the system cert store.
+
+### With elevation (`sudo` / Administrator)
+
+System-wide CA trust (browsers, OS/Java stores):
+
+```bash
+sudo guardian install-system && guardian check-system
+```
+
+```powershell
+.\guardian.exe install-system; .\guardian.exe check-system
+```
+
+Remove when done: `guardian remove-system` or `guardian clean` (elevated).
 
 ## Usage
 

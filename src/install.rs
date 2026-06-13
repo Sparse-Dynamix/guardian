@@ -166,6 +166,15 @@ mod tests {
         let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
         #[cfg(unix)]
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
+        #[cfg(windows)]
+        {
+            let stub = {
+                let script = dir.path().join("ok.cmd");
+                std::fs::write(&script, "@exit /b 0\r\n").unwrap();
+                script
+            };
+            std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
+        }
         let result = run_install_system(dir.path(), &[TrustStore::System]);
         match prev {
             Some(value) => std::env::set_var("GUARDIAN_MKCERT_TEST", value),
