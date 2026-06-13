@@ -12,10 +12,47 @@ permissions:
   contents: read
 
 jobs:
+  build-linux-x64:
+    name: build (linux x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Install Rust coverage tools
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+
+      - name: Allow ptrace for Frida
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
+
+      - run: npm ci
+
+      - name: Smoke (patch, build, unit, integration)
+        run: npm run smoke
+
+      - name: Coverage (llvm-cov, 90% line gate)
+        run: npm run coverage
+
   build-mac-x64:
     name: build (mac x64)
     runs-on: [self-hosted, sparse-dynamics, macOS, X64]
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +77,7 @@ jobs:
   build-win-x64:
     name: build (win x64)
     runs-on: [self-hosted, sparse-dynamics, Windows, X64]
-    timeout-minutes: 45
+    timeout-minutes: 30
     defaults:
       run:
         shell: powershell -executionpolicy bypass -command "$ErrorActionPreference='Stop'; . '{0}'"
