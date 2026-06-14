@@ -9,6 +9,7 @@
     "test:bypass": "node --test scripts/connect-bypass.test.ts",
     "test:handshake": "node --test scripts/connect-handshake.test.ts",
     "coverage": "node --import tsx ./node_modules/zx/build/cli.js scripts/coverage.zx.ts",
+    "pack:release": "node --import tsx ./node_modules/zx/build/cli.js scripts/pack-release.zx.ts",
     "format:js": "biome format --write",
     "format:rs": "cargo fmt",
     "format": "npm-run-all --parallel format:*"
@@ -27,7 +28,9 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
     "@fastify/sse": "^0.4.0",
+    "@types/archiver": "^8.0.0",
     "@types/node": "^25.9.1",
+    "archiver": "^8.0.0",
     "fastify": "^5.8.5",
     "npm-run-all": "^4.1.5",
     "tsx": "^4.22.4",

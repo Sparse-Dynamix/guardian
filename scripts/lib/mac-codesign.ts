@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { $ } from "zx";
 
-const ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
+export const GUARDIAN_ENTITLEMENTS_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -11,6 +11,13 @@ const ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
   <true/>
 </dict>
 </plist>`;
+
+export async function signAdHoc(bin: string): Promise<void> {
+  if (!fs.existsSync(bin)) {
+    throw new Error(`missing binary to sign: ${bin}`);
+  }
+  await $`codesign -s - -f ${bin}`;
+}
 
 export async function signGuardianBin(bin: string): Promise<void> {
   if (!fs.existsSync(bin)) {
@@ -20,7 +27,7 @@ export async function signGuardianBin(bin: string): Promise<void> {
     os.tmpdir(),
     `guardian-entitlements-${process.pid}.plist`,
   );
-  fs.writeFileSync(entitlements, ENTITLEMENTS);
+  fs.writeFileSync(entitlements, GUARDIAN_ENTITLEMENTS_PLIST);
   try {
     await $`codesign -s - -f --entitlements ${entitlements} ${bin}`;
   } finally {
