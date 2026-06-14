@@ -11,7 +11,7 @@ use kill_tree::Config;
 use serde_json::json;
 
 use crate::ca::CaTrust;
-use crate::child_exit::ChildExitWaiter;
+use crate::child_exit::{is_reap_race_err, try_reap_child_exit, ChildExitWaiter};
 use crate::config::Settings;
 use crate::frida_ext::{
     connect_device_child_signals, connect_session_detached, enable_child_gating,
@@ -33,6 +33,7 @@ pub struct HookBundle {
 enum ProcessEvent {
     ChildAdded(u32),
     ChildRemoved(u32),
+    RootExited(i32),
     ProcessReplaced(u32),
 }
 
@@ -83,12 +84,17 @@ fn instrument<'a>(
     enable_child_gating(&session)?;
 
     let tx_replace = event_tx.clone();
-    let tx_detach = event_tx.clone();
+    let tx_root_exit = event_tx.clone();
+    let tx_root_removed = event_tx.clone();
     let detached = connect_session_detached(&session, move |reason| {
         if is_process_replaced(reason) {
             let _ = tx_replace.send(ProcessEvent::ProcessReplaced(pid));
-        } else if pid == root_pid && matches!(probe_pid(pid), PidProbe::Gone) {
-            let _ = tx_detach.send(ProcessEvent::ChildRemoved(pid));
+        } else if pid == root_pid {
+            if let Some(code) = try_reap_child_exit(pid) {
+                let _ = tx_root_exit.send(ProcessEvent::RootExited(code));
+            } else {
+                let _ = tx_root_removed.send(ProcessEvent::ChildRemoved(pid));
+            }
         }
     });
 
@@ -209,7 +215,7 @@ pub fn run_injection_coordinated(
     )
     .context("failed to instrument root process")?;
 
-    // Arm a blocking OS exit wait (pidfd / kqueue / process handle) before resume.
+    // Arm a blocking OS exit wait (waitpid / kqueue / process handle) before resume.
     let exit_waiter = ChildExitWaiter::start(root_pid)?;
     resume_pid(&device, root_pid)?;
 
@@ -286,6 +292,14 @@ fn probe_pid(pid: u32) -> PidProbe {
     }
 }
 
+fn recv_exit_or_none(exit_waiter: &ChildExitWaiter, timeout: Duration) -> Result<Option<i32>> {
+    match exit_waiter.try_recv_exit(timeout) {
+        Ok(code) => Ok(code),
+        Err(err) if is_reap_race_err(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 fn wait_for_root<'a>(
     root_pid: u32,
     exit_waiter: ChildExitWaiter,
@@ -307,17 +321,24 @@ fn wait_for_root<'a>(
         }
 
         // Collect exit status before tearing down Frida sessions: dropping the root session
-        // on ChildRemoved can reap the zombie before our exit waiter returns.
-        if let Some(code) = exit_waiter.try_recv_exit(Duration::ZERO)? {
+        // on detach can reap the zombie before our exit waiter returns.
+        if let Some(code) = recv_exit_or_none(&exit_waiter, Duration::ZERO)? {
             sessions.clear();
             return Ok(code);
         }
 
         while let Ok(event) = event_rx.try_recv() {
             match event {
+                ProcessEvent::RootExited(code) => {
+                    sessions.clear();
+                    return Ok(code);
+                }
                 ProcessEvent::ChildRemoved(pid) => {
                     if pid != root_pid {
                         sessions.remove(&pid);
+                    } else if let Some(code) = try_reap_child_exit(pid) {
+                        sessions.clear();
+                        return Ok(code);
                     }
                 }
                 ProcessEvent::ProcessReplaced(pid) => {
@@ -336,9 +357,17 @@ fn wait_for_root<'a>(
             }
         }
 
-        if let Some(code) = exit_waiter.try_recv_exit(poll)? {
+        if let Some(code) = recv_exit_or_none(&exit_waiter, poll)? {
             sessions.clear();
             return Ok(code);
+        }
+
+        if matches!(probe_pid(root_pid), PidProbe::Gone) {
+            if let Some(code) = try_reap_child_exit(root_pid) {
+                sessions.clear();
+                return Ok(code);
+            }
+            anyhow::bail!("root pid {root_pid} exited before exit status could be collected");
         }
 
         match interrupt_rx.recv_timeout(poll) {
