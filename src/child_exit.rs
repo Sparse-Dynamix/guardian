@@ -236,7 +236,8 @@ fn exit_code_from_kqueue_status(status: i32) -> i32 {
 
 #[cfg(windows)]
 struct WindowsWait {
-    handle: windows_sys::Win32::Foundation::HANDLE,
+    // HANDLE is not Send; store as usize for cross-thread handoff to the waiter thread.
+    handle: usize,
 }
 
 #[cfg(windows)]
@@ -256,17 +257,19 @@ fn prepare_windows_wait(pid: u32) -> Result<WindowsWait> {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("OpenProcess failed for pid {pid}"));
     }
-    Ok(WindowsWait { handle })
+    Ok(WindowsWait {
+        handle: handle as usize,
+    })
 }
 
 #[cfg(windows)]
 fn finish_windows_wait(pid: u32, wait: WindowsWait, armed_tx: SyncSender<()>) -> Result<i32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
     const STILL_ACTIVE: u32 = 259;
 
-    let WindowsWait { handle } = wait;
+    let handle = wait.handle as HANDLE;
     signal_armed(&armed_tx)?;
 
     let wait = unsafe { WaitForSingleObject(handle, u32::MAX) };
