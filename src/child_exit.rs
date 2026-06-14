@@ -1,7 +1,7 @@
 //! Wait for a child PID to exit and return its exit code (Frida-spawned processes are not
 //! direct children of Guardian, so `std::process::Child::wait` is unavailable).
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -13,15 +13,31 @@ pub struct ChildExitWaiter {
 }
 
 impl ChildExitWaiter {
+    /// Open/register the OS exit wait synchronously, spawn a blocking waiter, and return only
+    /// after the waiter thread is about to enter its blocking wait syscall.
     pub fn start(pid: u32) -> Result<Self> {
         let (exit_tx, exit_rx) = mpsc::channel();
+        let (armed_tx, armed_rx) = mpsc::sync_channel(0);
+
+        #[cfg(target_os = "linux")]
+        let prepared = PreparedWait::Linux(prepare_linux_wait(pid)?);
+        #[cfg(target_os = "macos")]
+        let prepared = PreparedWait::Mac(prepare_macos_wait(pid)?);
+        #[cfg(windows)]
+        let prepared = PreparedWait::Windows(prepare_windows_wait(pid)?);
+
         let thread = thread::Builder::new()
             .name(format!("child-exit-{pid}"))
             .spawn(move || {
-                let result = wait_for_exit(pid);
+                let result = finish_prepared_wait(pid, prepared, armed_tx);
                 let _ = exit_tx.send(result);
             })
             .context("failed to spawn child exit waiter thread")?;
+
+        armed_rx
+            .recv()
+            .context("child exit waiter failed to arm blocking wait")?;
+
         Ok(Self {
             exit_rx,
             thread: Some(thread),
@@ -59,56 +75,86 @@ impl Drop for ChildExitWaiter {
     }
 }
 
-fn wait_for_exit(pid: u32) -> Result<i32> {
+enum PreparedWait {
     #[cfg(target_os = "linux")]
-    {
-        return wait_linux(pid);
-    }
+    Linux(LinuxWait),
     #[cfg(target_os = "macos")]
-    {
-        return wait_macos(pid);
-    }
+    Mac(MacosWait),
     #[cfg(windows)]
-    {
-        return wait_windows(pid);
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    {
-        let _ = pid;
-        anyhow::bail!("child exit waiting is not implemented on this platform");
+    Windows(WindowsWait),
+}
+
+fn finish_prepared_wait(pid: u32, prepared: PreparedWait, armed_tx: SyncSender<()>) -> Result<i32> {
+    match prepared {
+        #[cfg(target_os = "linux")]
+        PreparedWait::Linux(wait) => finish_linux_wait(pid, wait, armed_tx),
+        #[cfg(target_os = "macos")]
+        PreparedWait::Mac(wait) => finish_macos_wait(pid, wait, armed_tx),
+        #[cfg(windows)]
+        PreparedWait::Windows(wait) => finish_windows_wait(pid, wait, armed_tx),
     }
 }
 
+fn signal_armed(armed_tx: &SyncSender<()>) -> Result<()> {
+    armed_tx
+        .send(())
+        .context("failed to signal child exit waiter armed")
+}
+
 #[cfg(target_os = "linux")]
-fn wait_linux(pid: u32) -> Result<i32> {
+struct LinuxWait {
+    pidfd: i32,
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_wait(pid: u32) -> Result<LinuxWait> {
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
     if pidfd < 0 {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("pidfd_open failed for pid {pid}"));
     }
-    let pidfd = pidfd as i32;
+    Ok(LinuxWait {
+        pidfd: pidfd as i32,
+    })
+}
 
+#[cfg(target_os = "linux")]
+fn finish_linux_wait(pid: u32, wait: LinuxWait, armed_tx: SyncSender<()>) -> Result<i32> {
+    let LinuxWait { pidfd } = wait;
+    signal_armed(&armed_tx)?;
+    let result = waitid_pidfd(pid, pidfd);
+    unsafe {
+        libc::close(pidfd);
+    }
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn waitid_pidfd(pid: u32, pidfd: i32) -> Result<i32> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let ret = unsafe {
         libc::waitid(
             libc::P_PIDFD,
             pidfd as libc::id_t,
             &mut info as *mut libc::siginfo_t,
+            libc::WEXITED | libc::WNOWAIT,
+        )
+    };
+    if ret < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("waitid failed for pid {pid}"));
+    }
+    let code = exit_code_from_siginfo(&info);
+    let mut discard: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let _ = unsafe {
+        libc::waitid(
+            libc::P_PIDFD,
+            pidfd as libc::id_t,
+            &mut discard as *mut libc::siginfo_t,
             libc::WEXITED,
         )
     };
-    let wait_err = if ret < 0 {
-        Some(std::io::Error::last_os_error())
-    } else {
-        None
-    };
-    unsafe {
-        libc::close(pidfd);
-    }
-    if let Some(err) = wait_err {
-        return Err(err).with_context(|| format!("waitid failed for pid {pid}"));
-    }
-    Ok(exit_code_from_siginfo(&info))
+    Ok(code)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -122,7 +168,12 @@ fn exit_code_from_siginfo(info: &libc::siginfo_t) -> i32 {
 }
 
 #[cfg(target_os = "macos")]
-fn wait_macos(pid: u32) -> Result<i32> {
+struct MacosWait {
+    kq: i32,
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_wait(pid: u32) -> Result<MacosWait> {
     const NOTE_EXITSTATUS: libc::uint32_t = 0x0400_0000;
 
     unsafe {
@@ -144,6 +195,16 @@ fn wait_macos(pid: u32) -> Result<i32> {
             return Err(err).with_context(|| format!("kevent register failed for pid {pid}"));
         }
 
+        Ok(MacosWait { kq })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn finish_macos_wait(pid: u32, wait: MacosWait, armed_tx: SyncSender<()>) -> Result<i32> {
+    let MacosWait { kq } = wait;
+    signal_armed(&armed_tx)?;
+
+    unsafe {
         let mut out_kev: libc::kevent = std::mem::zeroed();
         if libc::kevent(
             kq,
@@ -174,14 +235,14 @@ fn exit_code_from_kqueue_status(status: i32) -> i32 {
 }
 
 #[cfg(windows)]
-fn wait_windows(pid: u32) -> Result<i32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, WaitForSingleObject, INFINITE,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+struct WindowsWait {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
 
-    const STILL_ACTIVE: u32 = 259;
+#[cfg(windows)]
+fn prepare_windows_wait(pid: u32) -> Result<WindowsWait> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 
     let handle = unsafe {
@@ -195,8 +256,20 @@ fn wait_windows(pid: u32) -> Result<i32> {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("OpenProcess failed for pid {pid}"));
     }
+    Ok(WindowsWait { handle })
+}
 
-    let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+#[cfg(windows)]
+fn finish_windows_wait(pid: u32, wait: WindowsWait, armed_tx: SyncSender<()>) -> Result<i32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+
+    const STILL_ACTIVE: u32 = 259;
+
+    let WindowsWait { handle } = wait;
+    signal_armed(&armed_tx)?;
+
+    let wait = unsafe { WaitForSingleObject(handle, u32::MAX) };
     if wait != WAIT_OBJECT_0 {
         unsafe { CloseHandle(handle) };
         return Err(std::io::Error::last_os_error())

@@ -209,8 +209,7 @@ pub fn run_injection_coordinated(
     )
     .context("failed to instrument root process")?;
 
-    // Arm pidfd wait after attach but before resume so fast exits cannot be reaped
-    // before waitid is registered (avoids ESRCH flakes and ChildRemoved hangs).
+    // Arm a blocking OS exit wait (pidfd / kqueue / process handle) before resume.
     let exit_waiter = ChildExitWaiter::start(root_pid)?;
     resume_pid(&device, root_pid)?;
 
@@ -307,13 +306,19 @@ fn wait_for_root<'a>(
             return Ok(130);
         }
 
+        // Collect exit status before tearing down Frida sessions: dropping the root session
+        // on ChildRemoved can reap the zombie before our exit waiter returns.
+        if let Some(code) = exit_waiter.try_recv_exit(Duration::ZERO)? {
+            sessions.clear();
+            return Ok(code);
+        }
+
         while let Ok(event) = event_rx.try_recv() {
-            if is_authoritative_root_exit(&event, root_pid) {
-                sessions.remove(&root_pid);
-            }
             match event {
                 ProcessEvent::ChildRemoved(pid) => {
-                    sessions.remove(&pid);
+                    if pid != root_pid {
+                        sessions.remove(&pid);
+                    }
                 }
                 ProcessEvent::ProcessReplaced(pid) => {
                     sessions.remove(&pid);
@@ -332,6 +337,7 @@ fn wait_for_root<'a>(
         }
 
         if let Some(code) = exit_waiter.try_recv_exit(poll)? {
+            sessions.clear();
             return Ok(code);
         }
 
