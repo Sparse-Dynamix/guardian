@@ -20,7 +20,11 @@ Get the latest build from **[Releases → nightly](https://github.com/Sparse-Dyn
 | macOS | `guardian-*-mac-x86_64.tar.gz` | `guardian` |
 | Windows | `guardian-*-win-x86_64.zip` | `guardian.exe` |
 
-Extract the archive. **Keep every file in that folder together** — if a Frida library (`libfrida-core.so`, `libfrida-core.dylib`, or `frida-core.dll`) is included, it must stay next to the binary.
+Each archive contains the binary, `LICENSE`, and `NOTICE.txt`. macOS builds also include `entitlements.plist` for ad-hoc signing.
+
+**Frida is inside the binary.** Release builds statically link Frida Core via the Rust `frida` crate (`auto-download` devkit). There is no separate `libfrida-core.so`, `.dylib`, or `.dll` to install — the `guardian` executable is self-contained for MITM hooking. `mkcert` is embedded the same way for CA trust-store commands. See [NOTICE.txt](NOTICE.txt) for third-party attributions.
+
+Extract the archive and run the binary from that folder.
 
 ### 2. Install
 
@@ -137,7 +141,7 @@ If you are an AI agent installing Guardian for a user, follow these steps in ord
 2. **Download** the matching archive from [nightly](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly).
 3. **Extract** to a stable path (e.g. `~/guardian` or `%USERPROFILE%\guardian`).
 4. **macOS only:** run `codesign` with the bundled `entitlements.plist` (see step 2 above).
-5. **Set `GUARDIAN_BIN`** to the full path of `guardian` / `guardian.exe`. Keep all files from the archive in the same directory.
+5. **Set `GUARDIAN_BIN`** to the full path of `guardian` / `guardian.exe`. No separate Frida install is required — it is linked into the binary.
 6. **Ask the user for their filter URL** (`--tpf`) or read `GUARDIAN_TRYPANOPHOBE_FILTER` if already set.
 7. **Wrap the user's agent command:** `guardian --skip-cert-regen --tpf <URL> -- <their-agent-cmd>`.
 8. **If HTTPS fails** with certificate errors, run `install-system` + `check-system` (requires user approval for admin).

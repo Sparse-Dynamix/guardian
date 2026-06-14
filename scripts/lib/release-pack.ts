@@ -4,22 +4,14 @@ import { archiveRootName, packTarGz, packZip } from "./archive.ts";
 import type { HostPlatform } from "./guard.ts";
 import {
   GUARDIAN_ENTITLEMENTS_PLIST,
-  signAdHoc,
   signGuardianBin,
 } from "./mac-codesign.ts";
 import { cdRepo, REPO_ROOT } from "./repo.ts";
-import { stageFridaRuntime } from "./stage-frida.ts";
 
 const BIN: Record<HostPlatform, string> = {
   linux: "guardian",
   mac: "guardian",
   win: "guardian.exe",
-};
-
-const FRIDA: Record<HostPlatform, string> = {
-  linux: "libfrida-core.so",
-  mac: "libfrida-core.dylib",
-  win: "frida-core.dll",
 };
 
 const ARCH = "x86_64";
@@ -49,7 +41,6 @@ export async function packReleaseArchive(
   platform: HostPlatform,
 ): Promise<string> {
   cdRepo();
-  stageFridaRuntime(platform);
 
   const releaseDir = path.join(REPO_ROOT, "target", "release");
   const version = packageVersion();
@@ -64,7 +55,6 @@ export async function packReleaseArchive(
   if (!copyIfExists(releaseDir, staging, BIN[platform], platform !== "win")) {
     throw new Error(`missing release binary: ${BIN[platform]}`);
   }
-  copyIfExists(releaseDir, staging, FRIDA[platform], platform !== "win");
 
   for (const doc of ["LICENSE", "NOTICE.txt"]) {
     const src = path.join(REPO_ROOT, doc);
@@ -79,8 +69,6 @@ export async function packReleaseArchive(
       GUARDIAN_ENTITLEMENTS_PLIST,
     );
     await signGuardianBin(path.join(staging, "guardian"));
-    const frida = path.join(staging, FRIDA.mac);
-    if (fs.existsSync(frida)) await signAdHoc(frida);
   }
 
   const distDir = path.join(REPO_ROOT, "dist");

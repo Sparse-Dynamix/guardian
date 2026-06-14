@@ -118,6 +118,23 @@ TPF mock endpoints: `POST /pass` → 200 empty; `POST /reject` → 503; `POST /s
 
 Shipped defaults: [`config/guardian.toml`](config/guardian.toml).
 
+## Release binaries (nightly)
+
+CI publishes platform archives to the [`nightly`](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly) GitHub release tag (`npm run pack:release` after smoke + coverage).
+
+| Archive contents | Linux / Windows | macOS |
+|------------------|-----------------|-------|
+| `guardian` / `guardian.exe` | yes | yes |
+| `LICENSE`, `NOTICE.txt` | yes | yes |
+| `entitlements.plist` | — | yes |
+
+**Embedded at link time (not separate files in the archive):**
+
+- **Frida Core** — `frida` + `frida-sys` with `auto-download` download the official devkit (`libfrida-core.a` / static Windows import lib) and link it into the binary. The devkit does not ship a loadable `.so` / `.dylib` / `.dll` for this build mode.
+- **mkcert** — embedded by `build.rs` for `install-system` / `remove-system`.
+
+End-user docs: [README.md](README.md#1-download).
+
 ## Known limitations
 
 - Certificate pinning blocks MITM

@@ -10,7 +10,6 @@ import {
   stageSignedPrintenv,
 } from "./lib/mac-codesign.ts";
 import { cdRepo, releaseGuardianBin, REPO_ROOT } from "./lib/repo.ts";
-import { stageFridaRuntime } from "./lib/stage-frida.ts";
 
 requirePlatform("mac");
 cdRepo();
@@ -23,8 +22,7 @@ if (!fs.existsSync(out)) {
 }
 
 const releaseDir = path.join(REPO_ROOT, "target", "release");
-stageFridaRuntime("mac");
-console.log("==> ad-hoc signing guardian (get-task-allow) for Frida");
+console.log("==> ad-hoc signing guardian (get-task-allow) for Frida injection");
 await signGuardianBin(out);
 console.log(
   "==> staging ad-hoc signed curl/env/printenv for smoke child targets",

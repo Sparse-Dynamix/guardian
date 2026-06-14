@@ -14,6 +14,7 @@ const END_MARKER: &str = "===== END AUTO-GENERATED: rust-dependency-licenses ===
 fn main() {
     #[cfg(target_os = "linux")]
     {
+        // Same-directory rpath for any loadable deps; Frida Core is statically linked.
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
     #[cfg(target_os = "macos")]

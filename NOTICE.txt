@@ -200,7 +200,8 @@ Frida (runtime instrumentation)
               set in Wrapper mode
   Project   : https://frida.re
   Bindings  : https://github.com/frida/frida-rust
-  Shipped   : libfrida-core (shared library or DLL) loaded at runtime
+  Shipped   : Statically linked into the Guardian binary at build time (Frida Core
+              devkit via frida-rust `auto-download`; not a separate runtime library)
   SPDX      : wxWindows Library Licence
 
 Proxelar (embedded MITM proxy)
