@@ -1,5 +1,11 @@
 # Guardian
 
+[![Linux x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=Linux%20x86_64&logo=linux&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-linux-x86_64.tar.gz)
+[![macOS x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=macOS%20x86_64&logo=apple&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-mac-x86_64.tar.gz)
+[![Windows x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=Windows%20x86_64&logo=windows&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-win-x86_64.zip)
+
+> **1.0.0-beta** — experimental hardening aid, not a safety product. Read [`guardian security-notes`](SECURITY.md) and [NOTICE.txt](NOTICE.txt) before use.
+
 Put a safety filter between your AI agent and the outside world.
 
 Guardian wraps the program your agent runs (Cursor, Claude Code, OpenCode, a custom script, etc.). When filtering is on, it intercepts **HTTP, HTTPS, WebSocket, and secure WebSocket (WS/WSS)** traffic from that program, sends each response to your filter for approval, and only passes through what the filter allows. It can also filter **tool-call payloads** before they reach the agent.
@@ -86,7 +92,10 @@ export GUARDIAN_TRYPANOPHOBE_FILTER=https://your-filter.example/check
 $GUARDIAN_BIN --tpf "$GUARDIAN_TRYPANOPHOBE_FILTER" -- your-agent-command
 ```
 
-**Harness note for integrators:** the wrapped program should not use stdin (`stdin: 'ignore'` / `Stdio::null()`). Payload mode uses stdin instead — see below.
+**Harness notes for integrators:**
+
+- The wrapped program should not use stdin (`stdin: 'ignore'` / `Stdio::null()`). Payload mode uses stdin instead — see below.
+- **SSE streaming** (`text/event-stream`) is gated per event: each event waits for a `--tpf` round-trip (default timeout 10s) before the harness sees it.
 
 ### 4. HTTPS (encrypted traffic)
 
@@ -169,6 +178,18 @@ Wrap a child process — intercepts HTTP(S) and WS(S) from that process when `--
 ![Payload mode](assets/payload-mode.png)
 
 Filter tool-call JSON via `--payload` or piped stdin.
+
+## Limitations
+
+Guardian filters **hooked HTTP/HTTPS/WS/WSS** and optional tool payloads — not all traffic from the child process.
+
+- **Loopback** (`127.0.0.0/8`, `::1`, etc.) bypasses the connect hook; local services are not sent to `--tpf`.
+- **Default `ignored_ports`** leave SSH, mail, databases, LDAP, RDP, and similar TCP unhooked unless you customize `--filter` or `--ignored-ports` (see `config/guardian.toml`).
+- **Non-HTTP TCP** on hooked ports is tunneled through the proxy without content filtering.
+- **QUIC/UDP** is not intercepted.
+- **Certificate pinning** in the child blocks MITM; see [SECURITY.md](SECURITY.md).
+
+Full threat model and transport guidance: run `guardian security-notes` or read [SECURITY.md](SECURITY.md).
 
 ## Build from source
 

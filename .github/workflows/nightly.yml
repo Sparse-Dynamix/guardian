@@ -155,5 +155,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: true
           make_latest: true
-          generate_release_notes: true
+          body: |
+            Rolling pre-release build from [`main`](https://github.com/${{ github.repository }}/tree/main) @ [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}).
           files: release/*
