@@ -611,6 +611,38 @@ mod tests {
     }
 
     #[test]
+    fn try_wait_exited_child_is_not_running() {
+        use std::process::{Command, Stdio};
+
+        #[cfg(windows)]
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "exit", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        #[cfg(not(windows))]
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+
+        let pid = child.id();
+        let _ = child.wait().expect("wait child");
+        assert!(matches!(try_wait_pid(pid), WaitStatus::NotRunning));
+        assert!(matches!(probe_pid(pid), PidProbe::Gone));
+    }
+
+    #[test]
+    fn root_exited_event_is_not_authoritative_child_removed() {
+        assert!(!is_authoritative_root_exit(&ProcessEvent::RootExited(9), 9));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn terminate_process_tree_escalates_past_sigint() {
         use std::process::{Command, Stdio};
@@ -622,6 +654,24 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn bash sleeper");
+        let pid = child.id();
+        terminate_process_tree(pid);
+        let status = child.wait().expect("wait child");
+        assert!(!status.success());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn terminate_process_tree_kills_cmd_child() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "timeout", "/t", "30", "/nobreak"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cmd sleeper");
         let pid = child.id();
         terminate_process_tree(pid);
         let status = child.wait().expect("wait child");

@@ -18,6 +18,16 @@ mod tests {
     use super::env_test_lock;
 
     #[test]
+    fn env_test_lock_recovers_after_poison() {
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = env_test_lock();
+            panic!("poison lock");
+        });
+        assert!(poisoned.is_err());
+        let _guard = env_test_lock();
+    }
+
+    #[test]
     fn env_test_lock_can_be_acquired() {
         let _guard = env_test_lock();
     }

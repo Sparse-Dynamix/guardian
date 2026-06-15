@@ -266,16 +266,18 @@ mod tests {
     use crate::config::resolve_settings;
 
     #[test]
-    fn normalize_exit_code_passes_through_on_unix() {
-        assert_eq!(normalize_exit_code(0), 0);
-        assert_eq!(normalize_exit_code(130), 130);
-    }
-
-    #[test]
     fn normalize_exit_code_masks_high_byte_on_windows() {
         if cfg!(windows) {
             assert_eq!(normalize_exit_code(260), 4);
+            assert_eq!(normalize_exit_code(0), 0);
+            assert_eq!(normalize_exit_code(1), 1);
         }
+    }
+
+    #[test]
+    fn normalize_exit_code_passes_through_on_unix() {
+        assert_eq!(normalize_exit_code(0), 0);
+        assert_eq!(normalize_exit_code(130), 130);
     }
 
     #[test]

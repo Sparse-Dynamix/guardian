@@ -156,6 +156,47 @@ mod tests {
     }
 
     #[test]
+    fn remove_path_collect_noops_for_missing_path() {
+        let mut failed = Vec::new();
+        remove_path_collect(
+            Path::new("/nonexistent/guardian-clean-missing-path"),
+            &mut failed,
+        );
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn paths_equal_compares_nonexistent_paths_by_equality() {
+        assert!(paths_equal(
+            Path::new("/nonexistent/guardian-a"),
+            Path::new("/nonexistent/guardian-a"),
+        ));
+        assert!(!paths_equal(
+            Path::new("/nonexistent/guardian-a"),
+            Path::new("/nonexistent/guardian-b"),
+        ));
+    }
+
+    #[test]
+    fn paths_equal_returns_false_for_different_paths() {
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        assert!(!paths_equal(a.path(), b.path()));
+    }
+
+    #[test]
+    fn remove_path_collect_removes_directory() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(nested.join("sub")).unwrap();
+        std::fs::write(nested.join("sub/file.txt"), b"x").unwrap();
+        let mut failed = Vec::new();
+        remove_path_collect(&nested, &mut failed);
+        assert!(!nested.exists());
+        assert!(failed.is_empty());
+    }
+
+    #[test]
     fn paths_equal_compares_same_path() {
         let dir = TempDir::new().unwrap();
         assert!(paths_equal(dir.path(), dir.path()));
@@ -222,6 +263,35 @@ mod tests {
     }
 
     #[test]
+    fn run_clean_warns_when_mkcert_uninstall_fails() {
+        if !privileged() {
+            return;
+        }
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(ROOT_CA_PEM), b"pem").unwrap();
+
+        #[cfg(unix)]
+        let stub = write_stub(dir.path(), "fail.sh", "#!/bin/sh\nexit 1\n");
+        #[cfg(windows)]
+        let stub = {
+            let script = dir.path().join("fail.cmd");
+            std::fs::write(&script, "@exit /b 1\r\n").unwrap();
+            script
+        };
+
+        let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
+        std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
+        let result = run_clean(dir.path(), &[TrustStore::System]);
+        match prev {
+            Some(value) => std::env::set_var("GUARDIAN_MKCERT_TEST", value),
+            None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
+        }
+
+        result.expect("clean should succeed even when mkcert uninstall fails");
+    }
+
+    #[test]
     fn run_clean_invokes_uninstall_when_privileged_with_stub_mkcert() {
         if !privileged() {
             return;
@@ -248,5 +318,79 @@ mod tests {
         }
 
         result.expect("clean should succeed when privileged");
+    }
+
+    #[test]
+    fn warn_failed_removals_prints_each_path() {
+        warn_failed_removals(&[
+            PathBuf::from("/tmp/guardian-clean-missing-a"),
+            PathBuf::from("/tmp/guardian-clean-missing-b"),
+        ]);
+    }
+
+    #[test]
+    fn warn_system_trust_skipped_prints_notice() {
+        warn_system_trust_skipped();
+    }
+
+    fn make_undeletable_dir(parent: &Path) -> PathBuf {
+        let nested = parent.join("nested");
+        std::fs::create_dir_all(nested.join("inner")).unwrap();
+        std::fs::write(nested.join("inner/file.txt"), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let inner = nested.join("inner/file.txt");
+            let _lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(&inner)
+                .expect("exclusive lock");
+            std::mem::forget(_lock);
+        }
+        nested
+    }
+
+    #[test]
+    fn remove_path_collect_records_undeletable_file() {
+        let dir = TempDir::new().unwrap();
+        let nested = make_undeletable_dir(dir.path());
+
+        let mut failed = Vec::new();
+        remove_path_collect(&nested, &mut failed);
+        assert!(!failed.is_empty());
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn run_clean_warns_when_ca_dir_cannot_be_removed() {
+        let dir = TempDir::new().unwrap();
+        let _nested = make_undeletable_dir(dir.path());
+
+        run_clean(dir.path(), &[]).expect("clean should succeed with warnings");
+        assert!(dir.path().join("nested").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_remove_empty_dir_records_failure_when_parent_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("parent");
+        let empty = parent.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let mut failed = Vec::new();
+        try_remove_empty_dir(&empty, &mut failed);
+        assert!(!failed.is_empty());
+        let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
     }
 }

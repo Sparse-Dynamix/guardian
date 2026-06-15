@@ -382,8 +382,8 @@ mod tests {
     #[test]
     fn try_reap_returns_none_for_running_child() {
         #[cfg(windows)]
-        let mut child = Command::new("cmd.exe")
-            .args(["/C", "timeout", "/t", "30", "/nobreak"])
+        let mut child = Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -435,6 +435,35 @@ mod tests {
         }
         let _ = child.wait();
         assert_eq!(code, Some(5), "try_reap should observe exit code 5");
+    }
+
+    #[test]
+    fn try_recv_exit_times_out_for_running_child() {
+        #[cfg(windows)]
+        let mut child = Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        #[cfg(not(windows))]
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+
+        let pid = child.id();
+        let waiter = ChildExitWaiter::start(pid).expect("start waiter");
+        assert!(waiter
+            .try_recv_exit(Duration::from_millis(50))
+            .expect("recv")
+            .is_none());
+        child.kill().expect("kill child");
+        let _ = child.wait();
     }
 
     #[cfg(unix)]

@@ -24,6 +24,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_ports_include_common_services() {
+        assert!(DEFAULT_IGNORED_PORTS.contains(&22));
+        assert!(DEFAULT_IGNORED_PORTS.contains(&587));
+        assert!(DEFAULT_IGNORED_PORTS.contains(&3306));
+        assert!(DEFAULT_IGNORED_PORTS.contains(&5432));
+    }
+
+    #[test]
+    fn connect_filter_formats_single_port() {
+        let filter = connect_filter_from_ports(&[9999]);
+        assert!(filter.contains("9999"));
+        assert!(filter.contains("includes(port)"));
+        if cfg!(windows) {
+            assert_eq!(filter, "![9999].includes(port)");
+        } else {
+            assert!(filter.starts_with("(sa_family == 2 || sa_family == 0)"));
+        }
+    }
+
+    #[test]
+    fn connect_filter_formats_multiple_ports() {
+        let filter = connect_filter_from_ports(&[80, 443, 8080]);
+        assert!(filter.contains("80"));
+        assert!(filter.contains("443"));
+        assert!(filter.contains("8080"));
+    }
+
+    #[test]
     fn default_ports_exclude_ssh() {
         let filter = connect_filter_from_ports(DEFAULT_IGNORED_PORTS);
         assert!(filter.contains("22"));

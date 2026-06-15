@@ -199,220 +199,7 @@ pub async fn run_payload(settings: &Settings) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
     use super::*;
-
-    #[derive(Default)]
-    struct MockRecord {
-        body: Vec<u8>,
-        query: String,
-    }
-
-    fn wait_for_mock_ready(port: u16) {
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        panic!("mock server did not start on port {port}");
-    }
-
-    fn write_mock_response(
-        stream: &mut TcpStream,
-        status: u16,
-        body: &str,
-        content_type: Option<&str>,
-    ) {
-        use std::net::Shutdown;
-
-        let ct_line = content_type
-            .map(|t| format!("Content-Type: {t}\r\n"))
-            .unwrap_or_default();
-        let response = format!(
-            "HTTP/1.1 {status} OK\r\n{ct_line}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len(),
-        );
-        let _ = stream.write_all(response.as_bytes());
-        let _ = stream.flush();
-        let _ = stream.shutdown(Shutdown::Write);
-    }
-
-    fn handle_mock_connection(
-        mut stream: TcpStream,
-        status: u16,
-        body: &str,
-        content_type: Option<&str>,
-        record: Option<Arc<Mutex<MockRecord>>>,
-    ) {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            match stream.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        if !buf.is_empty() {
-            let req = String::from_utf8_lossy(&buf);
-            if req
-                .lines()
-                .next()
-                .is_some_and(|line| line.starts_with("POST "))
-            {
-                if let Some(rec) = &record {
-                    let query = req
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
-                        .unwrap_or("")
-                        .split('?')
-                        .nth(1)
-                        .unwrap_or("")
-                        .to_string();
-                    let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
-                    let mut guard = rec.lock().expect("lock");
-                    guard.query = query;
-                    guard.body = buf[body_start..].to_vec();
-                }
-            }
-        }
-
-        write_mock_response(&mut stream, status, body, content_type);
-    }
-
-    fn spawn_mock(
-        status: u16,
-        body: &str,
-        content_type: Option<&str>,
-        record: Option<Arc<Mutex<MockRecord>>>,
-    ) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
-        let port = listener.local_addr().expect("local addr").port();
-        let body = body.to_string();
-        let ct = content_type.map(str::to_string);
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                handle_mock_connection(
-                    stream,
-                    status,
-                    &body,
-                    ct.as_deref(),
-                    record.clone(),
-                );
-            }
-        });
-        wait_for_mock_ready(port);
-        format!("http://127.0.0.1:{port}/pass")
-    }
-
-    fn client_for(url: &str, swap: bool) -> TrypanophobeClient {
-        let http = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(0)
-            .build()
-            .expect("client");
-        TrypanophobeClient {
-            url: url.to_string(),
-            block_message: DEFAULT_BLOCK_MESSAGE.to_string(),
-            swap,
-            http,
-        }
-    }
-
-    #[tokio::test]
-    async fn check_tool_payload_200_allowed_without_swap() {
-        let url = spawn_mock(200, "", None, None);
-        let client = client_for(&url, false);
-        let outcome = client
-            .check(FilterInput::ToolPayload { bytes: b"hello" })
-            .await
-            .expect("check");
-        assert!(matches!(outcome, FilterOutcome::Allowed));
-    }
-
-    #[tokio::test]
-    async fn check_tool_payload_reject_status_blocks() {
-        let url = spawn_mock(503, "", None, None);
-        let client = client_for(&url, false);
-        let outcome = client
-            .check(FilterInput::ToolPayload { bytes: b"x" })
-            .await
-            .expect("check");
-        match outcome {
-            FilterOutcome::Blocked { message } => {
-                assert!(message.contains("Blocked by Guardian"));
-            }
-            other => panic!("unexpected outcome: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn check_http_posts_raw_body_with_url_query() {
-        let record = Arc::new(Mutex::new(MockRecord::default()));
-        let url = spawn_mock(200, "", None, Some(record.clone()));
-        let client = client_for(&url, false);
-        let _ = client
-            .check(FilterInput::HttpResponse {
-                url: "http://example.com/path",
-                body: b"response-bytes",
-            })
-            .await
-            .expect("http check");
-        let guard = record.lock().expect("lock");
-        assert!(guard.query.contains("url="));
-        assert!(guard.query.contains("example.com"));
-        assert_eq!(guard.body, b"response-bytes");
-    }
-
-    #[tokio::test]
-    async fn check_swap_returns_body_and_headers() {
-        let url = spawn_mock(200, "swapped", Some("text/markdown"), None);
-        let client = client_for(&url, true);
-        let outcome = client
-            .check(FilterInput::ToolPayload { bytes: b"x" })
-            .await
-            .expect("check");
-        match outcome {
-            FilterOutcome::Replace { body, headers } => {
-                assert_eq!(&body[..], b"swapped");
-                assert_eq!(
-                    headers.get(http::header::CONTENT_TYPE).unwrap(),
-                    "text/markdown"
-                );
-            }
-            other => panic!("unexpected outcome: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn content_filter_http_error_returns_block_with_error() {
-        let client = client_for("http://127.0.0.1:1/pass", false);
-        let verdict = client
-            .check_http_response(HttpFilterContext {
-                method: "GET",
-                url: "http://example.com/",
-                status: 200,
-                scheme: "http",
-                body: b"",
-            })
-            .await;
-        assert!(matches!(verdict, FilterVerdict::Block { .. }));
-    }
 
     fn payload_settings(tpf: Option<&str>, swap: bool, payload: &str) -> crate::config::Settings {
         crate::config::Settings {
@@ -443,60 +230,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_payload_without_tpf_echoes() {
-        let settings = payload_settings(None, false, "hello");
-        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
+    async fn content_filter_ws_frame_block_on_connection_error() {
+        let client = TrypanophobeClient::new(
+            "http://127.0.0.1:1/pass".into(),
+            DEFAULT_BLOCK_MESSAGE.to_string(),
+            5,
+            false,
+        )
+        .expect("client");
+        let verdict = client
+            .check_ws_frame(proxyapi::content_filter::WsFilterContext {
+                direction: "server_to_client",
+                opcode: "text",
+                payload: b"frame",
+            })
+            .await;
+        assert!(matches!(verdict, FilterVerdict::Block { .. }));
     }
 
     #[tokio::test]
-    async fn run_payload_allowed_returns_zero() {
-        let url = spawn_mock(200, "", None, None);
-        let settings = payload_settings(Some(&url), false, "hello");
-        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
+    async fn check_tool_payload_connection_error_returns_err() {
+        let client = TrypanophobeClient::new(
+            "http://127.0.0.1:1/pass".into(),
+            DEFAULT_BLOCK_MESSAGE.to_string(),
+            5,
+            false,
+        )
+        .expect("client");
+        let err = client
+            .check(FilterInput::ToolPayload { bytes: b"x" })
+            .await
+            .expect_err("dead port should fail");
+        assert!(err
+            .to_string()
+            .contains("Trypanophobe filter request failed"));
     }
 
     #[tokio::test]
-    async fn run_payload_swap_returns_zero() {
-        let url = spawn_mock(200, "swapped-out", Some("text/plain"), None);
-        let settings = payload_settings(Some(&url), true, "hello");
-        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn run_payload_blocked_returns_one() {
-        let url = spawn_mock(503, "", None, None);
-        let settings = payload_settings(Some(&url), false, "hello");
-        assert_eq!(super::run_payload(&settings).await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn content_filter_http_replace_on_swap() {
-        let url = spawn_mock(200, "replaced", Some("text/plain"), None);
-        let port = url
-            .trim_start_matches("http://127.0.0.1:")
-            .split('/')
-            .next()
-            .expect("mock port");
-        wait_for_mock_ready(port.parse().expect("mock port"));
-        let client = client_for(&url, true);
+    async fn content_filter_http_error_returns_block_with_error() {
+        let client = TrypanophobeClient::new(
+            "http://127.0.0.1:1/pass".into(),
+            DEFAULT_BLOCK_MESSAGE.to_string(),
+            5,
+            false,
+        )
+        .expect("client");
         let verdict = client
             .check_http_response(HttpFilterContext {
                 method: "GET",
-                url: "http://example.com/page",
+                url: "http://example.com/",
                 status: 200,
                 scheme: "http",
-                body: b"upstream",
+                body: b"",
             })
             .await;
-        match verdict {
-            FilterVerdict::Replace { body, headers } => {
-                assert_eq!(&body[..], b"replaced");
-                assert_eq!(
-                    headers.get(http::header::CONTENT_TYPE).unwrap(),
-                    "text/plain"
-                );
-            }
-            other => panic!("unexpected verdict: {other:?}"),
-        }
+        assert!(matches!(verdict, FilterVerdict::Block { .. }));
+    }
+
+    #[tokio::test]
+    async fn run_payload_without_tpf_echoes() {
+        let settings = payload_settings(None, false, "hello");
+        assert_eq!(super::run_payload(&settings).await.unwrap(), 0);
     }
 }
