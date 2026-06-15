@@ -103,6 +103,7 @@ fn signal_armed(armed_tx: &SyncSender<()>) -> Result<()> {
 }
 
 /// Best-effort reap when the process has exited but may still be a zombie.
+#[cfg(test)]
 pub(crate) fn try_reap_child_exit(pid: u32) -> Option<i32> {
     #[cfg(unix)]
     {
@@ -136,6 +137,7 @@ pub(crate) fn try_reap_child_exit(pid: u32) -> Option<i32> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn is_reap_race_err(err: &anyhow::Error) -> bool {
     #[cfg(unix)]
     {
@@ -167,28 +169,81 @@ fn exit_code_from_wait_status(status: i32) -> i32 {
 }
 
 #[cfg(target_os = "linux")]
-struct LinuxWait;
-
-#[cfg(target_os = "linux")]
-fn prepare_linux_wait(pid: u32) -> Result<LinuxWait> {
-    let ret = unsafe { libc::kill(pid as i32, 0) };
-    if ret < 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("process {pid} is not waitable"));
-    }
-    Ok(LinuxWait)
+enum LinuxWait {
+    PidFd(i32),
+    WaitPid,
 }
 
 #[cfg(target_os = "linux")]
-fn finish_linux_wait(pid: u32, _wait: LinuxWait, armed_tx: SyncSender<()>) -> Result<i32> {
-    signal_armed(&armed_tx)?;
-    let mut status: i32 = 0;
-    let ret = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+fn prepare_linux_wait(pid: u32) -> Result<LinuxWait> {
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if pidfd >= 0 {
+        return Ok(LinuxWait::PidFd(pidfd as i32));
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ENOSYS) | Some(libc::EINVAL) => {
+            let ret = unsafe { libc::kill(pid as i32, 0) };
+            if ret < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("process {pid} is not waitable"));
+            }
+            Ok(LinuxWait::WaitPid)
+        }
+        _ => Err(err).with_context(|| format!("pidfd_open failed for pid {pid}")),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn finish_linux_wait(pid: u32, wait: LinuxWait, armed_tx: SyncSender<()>) -> Result<i32> {
+    match wait {
+        LinuxWait::PidFd(pidfd) => {
+            signal_armed(&armed_tx)?;
+            let result = waitid_pidfd(pid, pidfd);
+            unsafe {
+                libc::close(pidfd);
+            }
+            result
+        }
+        LinuxWait::WaitPid => {
+            signal_armed(&armed_tx)?;
+            let mut status: i32 = 0;
+            let ret = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+            if ret < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("waitpid failed for pid {pid}"));
+            }
+            Ok(exit_code_from_wait_status(status))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn waitid_pidfd(pid: u32, pidfd: i32) -> Result<i32> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        libc::waitid(
+            libc::P_PIDFD,
+            pidfd as libc::id_t,
+            &mut info as *mut libc::siginfo_t,
+            libc::WEXITED,
+        )
+    };
     if ret < 0 {
         return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("waitpid failed for pid {pid}"));
+            .with_context(|| format!("waitid failed for pid {pid}"));
     }
-    Ok(exit_code_from_wait_status(status))
+    Ok(exit_code_from_siginfo(&info))
+}
+
+#[cfg(target_os = "linux")]
+fn exit_code_from_siginfo(info: &libc::siginfo_t) -> i32 {
+    let status = unsafe { info.si_status() };
+    if info.si_code == libc::CLD_EXITED as i32 {
+        status
+    } else {
+        128 + (status & 0x7f)
+    }
 }
 
 #[cfg(target_os = "macos")]
