@@ -194,7 +194,7 @@ mod tests {
     fn run_clean_removes_custom_ca_dir_and_default_home_artifacts() {
         let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join(ROOT_CA_PEM), b"pem").unwrap();
+        std::fs::write(dir.path().join("marker.txt"), b"x").unwrap();
 
         let default_home = default_guardian_home().expect("default guardian home");
         let user_toml = expand_tilde("~/.guardian/guardian.toml").expect("user toml path");
@@ -208,7 +208,7 @@ mod tests {
 
         run_clean(dir.path(), &[]).expect("clean custom ca dir");
 
-        assert!(!dir.path().join(ROOT_CA_PEM).exists());
+        assert!(!dir.path().join("marker.txt").exists());
         if !paths_equal(dir.path(), &default_home) {
             assert!(!user_toml.exists());
         }
