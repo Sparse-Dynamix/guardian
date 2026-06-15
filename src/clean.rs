@@ -145,6 +145,83 @@ mod tests {
     }
 
     #[test]
+    fn try_remove_empty_dir_ignores_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut failed = Vec::new();
+        try_remove_empty_dir(&file, &mut failed);
+        assert!(file.exists());
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn paths_equal_compares_same_path() {
+        let dir = TempDir::new().unwrap();
+        assert!(paths_equal(dir.path(), dir.path()));
+    }
+
+    #[test]
+    fn remove_path_collect_removes_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("x.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut failed = Vec::new();
+        remove_path_collect(&file, &mut failed);
+        assert!(!file.exists());
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn run_clean_succeeds_when_ca_dir_has_no_root_pem() {
+        let dir = TempDir::new().unwrap();
+        run_clean(dir.path(), &[]).expect("clean empty ca dir");
+    }
+
+    #[test]
+    fn try_remove_empty_dir_skips_nonempty() {
+        let dir = TempDir::new().unwrap();
+        let nonempty = dir.path().join("nonempty");
+        std::fs::create_dir(&nonempty).unwrap();
+        std::fs::write(nonempty.join("file.txt"), b"x").unwrap();
+        let mut failed = Vec::new();
+        try_remove_empty_dir(&nonempty, &mut failed);
+        assert!(nonempty.is_dir());
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn run_clean_removes_custom_ca_dir_and_default_home_artifacts() {
+        let _guard = crate::test_lock::env_test_lock();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(ROOT_CA_PEM), b"pem").unwrap();
+
+        let default_home = default_guardian_home().expect("default guardian home");
+        let user_toml = expand_tilde("~/.guardian/guardian.toml").expect("user toml path");
+        let prev_toml = user_toml
+            .exists()
+            .then(|| std::fs::read(&user_toml).unwrap());
+        if let Some(parent) = user_toml.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&user_toml, b"[test]\n").unwrap();
+
+        run_clean(dir.path(), &[]).expect("clean custom ca dir");
+
+        assert!(!dir.path().join(ROOT_CA_PEM).exists());
+        if !paths_equal(dir.path(), &default_home) {
+            assert!(!user_toml.exists());
+        }
+        match prev_toml {
+            Some(bytes) => std::fs::write(&user_toml, bytes).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(&user_toml);
+                try_remove_empty_dir(&default_home, &mut Vec::new());
+            }
+        }
+    }
+
+    #[test]
     fn run_clean_invokes_uninstall_when_privileged_with_stub_mkcert() {
         if !privileged() {
             return;

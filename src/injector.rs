@@ -445,6 +445,7 @@ mod tests {
         build_hook_bundle, is_authoritative_root_exit, probe_pid, recv_or_interrupted,
         terminate_process_tree, try_wait_pid, PidProbe, ProcessEvent, WaitStatus,
     };
+    use crate::child_exit::try_reap_child_exit;
 
     fn test_settings() -> Settings {
         Settings {
@@ -597,6 +598,16 @@ mod tests {
             &ProcessEvent::ChildRemoved(7),
             42
         ));
+    }
+
+    #[test]
+    fn probe_pid_missing_is_gone() {
+        assert!(matches!(probe_pid(4_000_000), PidProbe::Gone));
+    }
+
+    #[test]
+    fn try_reap_child_exit_returns_none_for_missing_pid() {
+        assert!(try_reap_child_exit(4_000_000).is_none());
     }
 
     #[test]

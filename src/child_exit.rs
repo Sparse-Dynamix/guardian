@@ -319,6 +319,7 @@ fn finish_windows_wait(pid: u32, wait: WindowsWait, armed_tx: SyncSender<()>) ->
 #[cfg(test)]
 mod tests {
     use std::process::{Command, Stdio};
+    use std::time::Duration;
 
     use super::ChildExitWaiter;
 
@@ -371,5 +372,79 @@ mod tests {
         let got = waiter.wait().expect("waiter exit code");
         assert_eq!(got, 3);
         drop(child);
+    }
+
+    #[test]
+    fn try_reap_missing_pid_returns_none() {
+        assert!(super::try_reap_child_exit(4_000_000).is_none());
+    }
+
+    #[test]
+    fn try_reap_returns_none_for_running_child() {
+        #[cfg(windows)]
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "timeout", "/t", "30", "/nobreak"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        #[cfg(not(windows))]
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+
+        let pid = child.id();
+        assert!(super::try_reap_child_exit(pid).is_none());
+        child.kill().expect("kill child");
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn try_reap_reads_exited_child_code() {
+        #[cfg(windows)]
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "exit", "5"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+        #[cfg(not(windows))]
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 5"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child");
+
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut code = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(exit) = super::try_reap_child_exit(pid) {
+                code = Some(exit);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.wait();
+        assert_eq!(code, Some(5), "try_reap should observe exit code 5");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_reap_race_err_recognizes_echild() {
+        let err = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ECHILD));
+        assert!(super::is_reap_race_err(&err));
+        let err = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ESRCH));
+        assert!(super::is_reap_race_err(&err));
+        let err = anyhow::Error::msg("other");
+        assert!(!super::is_reap_race_err(&err));
     }
 }

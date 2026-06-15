@@ -48,7 +48,7 @@ pub fn run_remove_system(ca_dir: &Path, stores: &[TrustStore]) -> Result<()> {
 
 pub(crate) fn invoke_mkcert(ca_dir: &Path, stores: &[TrustStore], flag: &str) -> Result<()> {
     let mkcert_path = mkcert::executable_path(ca_dir)?;
-    let mut cmd = Command::new(&mkcert_path);
+    let mut cmd = mkcert_command(&mkcert_path);
     cmd.env("CAROOT", ca_dir).arg(flag);
     if stores.len() < 3 {
         let list = stores
@@ -69,6 +69,19 @@ pub(crate) fn invoke_mkcert(ca_dir: &Path, stores: &[TrustStore], flag: &str) ->
         bail!("mkcert {flag} exited with {status}");
     }
     Ok(())
+}
+
+fn mkcert_command(mkcert_path: &Path) -> Command {
+    #[cfg(windows)]
+    if matches!(
+        mkcert_path.extension().and_then(|ext| ext.to_str()),
+        Some("cmd" | "bat")
+    ) {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(mkcert_path);
+        return cmd;
+    }
+    Command::new(mkcert_path)
 }
 
 #[cfg(test)]
@@ -125,18 +138,37 @@ mod tests {
         script
     }
 
+    fn mkcert_ok_stub(dir: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(unix)]
+        {
+            return write_stub(dir, "ok.sh", "#!/bin/sh\nexit 0\n");
+        }
+        #[cfg(windows)]
+        {
+            let script = dir.join("ok.cmd");
+            std::fs::write(&script, "@exit /b 0\r\n").unwrap();
+            script
+        }
+    }
+
+    fn mkcert_fail_stub(dir: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(unix)]
+        {
+            return write_stub(dir, "fail.sh", "#!/bin/sh\nexit 1\n");
+        }
+        #[cfg(windows)]
+        {
+            let script = dir.join("fail.cmd");
+            std::fs::write(&script, "@exit /b 1\r\n").unwrap();
+            script
+        }
+    }
+
     #[test]
     fn invoke_mkcert_fails_when_stub_exits_nonzero() {
         let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
-        #[cfg(unix)]
-        let stub = write_stub(dir.path(), "fail.sh", "#!/bin/sh\nexit 1\n");
-        #[cfg(windows)]
-        let stub = {
-            let script = dir.path().join("fail.cmd");
-            std::fs::write(&script, "@exit /b 1\r\n").unwrap();
-            script
-        };
+        let stub = mkcert_fail_stub(dir.path());
 
         let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
@@ -146,12 +178,10 @@ mod tests {
             None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
         }
 
-        #[cfg(unix)]
-        assert!(result.is_err());
-        #[cfg(windows)]
-        if result.is_ok() {
-            eprintln!("skipping windows nonzero stub assertion");
-        }
+        assert!(
+            result.is_err(),
+            "expected mkcert stub failure, got {result:?}"
+        );
     }
 
     #[test]
@@ -161,20 +191,9 @@ mod tests {
             return;
         }
         let dir = TempDir::new().unwrap();
+        let stub = mkcert_ok_stub(dir.path());
         let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
-        #[cfg(unix)]
-        let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
-        #[cfg(unix)]
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
-        #[cfg(windows)]
-        {
-            let stub = {
-                let script = dir.path().join("ok.cmd");
-                std::fs::write(&script, "@exit /b 0\r\n").unwrap();
-                script
-            };
-            std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
-        }
         let result = run_install_system(dir.path(), &[TrustStore::System]);
         match prev {
             Some(value) => std::env::set_var("GUARDIAN_MKCERT_TEST", value),
@@ -188,14 +207,7 @@ mod tests {
     fn invoke_mkcert_accepts_stub_executable() {
         let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
-        #[cfg(unix)]
-        let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
-        #[cfg(windows)]
-        let stub = {
-            let script = dir.path().join("stub.cmd");
-            std::fs::write(&script, "@exit /b 0\r\n").unwrap();
-            script
-        };
+        let stub = mkcert_ok_stub(dir.path());
 
         let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
@@ -209,28 +221,14 @@ mod tests {
             None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
         }
 
-        #[cfg(unix)]
-        result.expect("stub mkcert should succeed on unix");
-        #[cfg(windows)]
-        {
-            if result.is_err() {
-                eprintln!("skipping windows stub mkcert: {:?}", result.err());
-            }
-        }
+        result.expect("stub mkcert should succeed");
     }
 
     #[test]
     fn invoke_mkcert_with_all_stores_omits_trust_stores_env() {
         let _guard = crate::test_lock::env_test_lock();
         let dir = TempDir::new().unwrap();
-        #[cfg(unix)]
-        let stub = write_stub(dir.path(), "ok.sh", "#!/bin/sh\nexit 0\n");
-        #[cfg(windows)]
-        let stub = {
-            let script = dir.path().join("stub.cmd");
-            std::fs::write(&script, "@exit /b 0\r\n").unwrap();
-            script
-        };
+        let stub = mkcert_ok_stub(dir.path());
 
         let prev = std::env::var_os("GUARDIAN_MKCERT_TEST");
         std::env::set_var("GUARDIAN_MKCERT_TEST", &stub);
@@ -244,8 +242,7 @@ mod tests {
             None => std::env::remove_var("GUARDIAN_MKCERT_TEST"),
         }
 
-        #[cfg(unix)]
-        result.expect("all-store mkcert invocation should succeed on unix");
+        result.expect("all-store mkcert invocation should succeed");
     }
 
     #[test]
