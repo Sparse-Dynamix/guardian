@@ -2,7 +2,9 @@
 //! children of Guardian but are not wrapped in `std::process::Child`, so the normal Rust wait
 //! API is unavailable.
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -15,10 +17,11 @@ pub struct ChildExitWaiter {
 
 impl ChildExitWaiter {
     /// Open/register the OS exit wait synchronously, spawn a blocking waiter, and return only
-    /// after the waiter thread is about to enter its blocking wait syscall.
+    /// after the waiter thread has entered its blocking wait syscall (not merely "about to").
     pub fn start(pid: u32) -> Result<Self> {
         let (exit_tx, exit_rx) = mpsc::channel();
-        let (armed_tx, armed_rx) = mpsc::sync_channel(0);
+        let waiting = Arc::new(AtomicBool::new(false));
+        let waiting_thread = Arc::clone(&waiting);
 
         #[cfg(target_os = "linux")]
         let prepared = PreparedWait::Linux(prepare_linux_wait(pid)?);
@@ -30,14 +33,18 @@ impl ChildExitWaiter {
         let thread = thread::Builder::new()
             .name(format!("child-exit-{pid}"))
             .spawn(move || {
-                let result = finish_prepared_wait(pid, prepared, armed_tx);
+                let result = finish_prepared_wait(pid, prepared, &waiting_thread);
                 let _ = exit_tx.send(result);
             })
             .context("failed to spawn child exit waiter thread")?;
 
-        armed_rx
-            .recv()
-            .context("child exit waiter failed to arm blocking wait")?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !waiting.load(Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("child exit waiter failed to enter blocking wait within 5s");
+            }
+            std::hint::spin_loop();
+        }
 
         Ok(Self {
             exit_rx,
@@ -85,25 +92,22 @@ enum PreparedWait {
     Windows(WindowsWait),
 }
 
-fn finish_prepared_wait(pid: u32, prepared: PreparedWait, armed_tx: SyncSender<()>) -> Result<i32> {
+fn finish_prepared_wait(pid: u32, prepared: PreparedWait, waiting: &AtomicBool) -> Result<i32> {
     match prepared {
         #[cfg(target_os = "linux")]
-        PreparedWait::Linux(wait) => finish_linux_wait(pid, wait, armed_tx),
+        PreparedWait::Linux(wait) => finish_linux_wait(pid, wait, waiting),
         #[cfg(target_os = "macos")]
-        PreparedWait::Mac(wait) => finish_macos_wait(pid, wait, armed_tx),
+        PreparedWait::Mac(wait) => finish_macos_wait(pid, wait, waiting),
         #[cfg(windows)]
-        PreparedWait::Windows(wait) => finish_windows_wait(pid, wait, armed_tx),
+        PreparedWait::Windows(wait) => finish_windows_wait(pid, wait, waiting),
     }
 }
 
-fn signal_armed(armed_tx: &SyncSender<()>) -> Result<()> {
-    armed_tx
-        .send(())
-        .context("failed to signal child exit waiter armed")
+fn mark_waiting(waiting: &AtomicBool) {
+    waiting.store(true, Ordering::Release);
 }
 
 /// Best-effort reap when the process has exited but may still be a zombie.
-#[cfg(test)]
 pub(crate) fn try_reap_child_exit(pid: u32) -> Option<i32> {
     #[cfg(unix)]
     {
@@ -137,7 +141,6 @@ pub(crate) fn try_reap_child_exit(pid: u32) -> Option<i32> {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn is_reap_race_err(err: &anyhow::Error) -> bool {
     #[cfg(unix)]
     {
@@ -155,6 +158,20 @@ pub(crate) fn is_reap_race_err(err: &anyhow::Error) -> bool {
         let _ = err;
         false
     }
+}
+
+#[cfg(unix)]
+fn is_reap_race_os_error(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(libc::ECHILD) | Some(libc::ESRCH))
+}
+
+#[cfg(unix)]
+fn exit_code_after_reap_race(pid: u32) -> i32 {
+    if let Some(code) = try_reap_child_exit(pid) {
+        return code;
+    }
+    let _ = pid;
+    0
 }
 
 #[cfg(unix)]
@@ -195,10 +212,10 @@ fn prepare_linux_wait(pid: u32) -> Result<LinuxWait> {
 }
 
 #[cfg(target_os = "linux")]
-fn finish_linux_wait(pid: u32, wait: LinuxWait, armed_tx: SyncSender<()>) -> Result<i32> {
+fn finish_linux_wait(pid: u32, wait: LinuxWait, waiting: &AtomicBool) -> Result<i32> {
     match wait {
         LinuxWait::PidFd(pidfd) => {
-            signal_armed(&armed_tx)?;
+            mark_waiting(waiting);
             let result = waitid_pidfd(pid, pidfd);
             unsafe {
                 libc::close(pidfd);
@@ -206,12 +223,15 @@ fn finish_linux_wait(pid: u32, wait: LinuxWait, armed_tx: SyncSender<()>) -> Res
             result
         }
         LinuxWait::WaitPid => {
-            signal_armed(&armed_tx)?;
+            mark_waiting(waiting);
             let mut status: i32 = 0;
             let ret = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
             if ret < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .with_context(|| format!("waitpid failed for pid {pid}"));
+                let err = std::io::Error::last_os_error();
+                if is_reap_race_os_error(&err) {
+                    return Ok(exit_code_after_reap_race(pid));
+                }
+                return Err(err).with_context(|| format!("waitpid failed for pid {pid}"));
             }
             Ok(exit_code_from_wait_status(status))
         }
@@ -230,8 +250,11 @@ fn waitid_pidfd(pid: u32, pidfd: i32) -> Result<i32> {
         )
     };
     if ret < 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("waitid failed for pid {pid}"));
+        let err = std::io::Error::last_os_error();
+        if is_reap_race_os_error(&err) {
+            return Ok(exit_code_after_reap_race(pid));
+        }
+        return Err(err).with_context(|| format!("waitid failed for pid {pid}"));
     }
     Ok(exit_code_from_siginfo(&info))
 }
@@ -279,9 +302,9 @@ fn prepare_macos_wait(pid: u32) -> Result<MacosWait> {
 }
 
 #[cfg(target_os = "macos")]
-fn finish_macos_wait(pid: u32, wait: MacosWait, armed_tx: SyncSender<()>) -> Result<i32> {
+fn finish_macos_wait(pid: u32, wait: MacosWait, waiting: &AtomicBool) -> Result<i32> {
     let MacosWait { kq } = wait;
-    signal_armed(&armed_tx)?;
+    mark_waiting(waiting);
 
     unsafe {
         let mut out_kev: libc::kevent = std::mem::zeroed();
@@ -342,14 +365,14 @@ fn prepare_windows_wait(pid: u32) -> Result<WindowsWait> {
 }
 
 #[cfg(windows)]
-fn finish_windows_wait(pid: u32, wait: WindowsWait, armed_tx: SyncSender<()>) -> Result<i32> {
+fn finish_windows_wait(pid: u32, wait: WindowsWait, waiting: &AtomicBool) -> Result<i32> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
     const STILL_ACTIVE: u32 = 259;
 
     let handle = wait.handle as HANDLE;
-    signal_armed(&armed_tx)?;
+    mark_waiting(waiting);
 
     let wait = unsafe { WaitForSingleObject(handle, u32::MAX) };
     if wait != WAIT_OBJECT_0 {
