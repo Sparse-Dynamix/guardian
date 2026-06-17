@@ -144,8 +144,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete nightly --yes 2>/dev/null || true
-          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/nightly" 2>/dev/null || true
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          while read -r release_id; do
+            gh api -X DELETE "repos/${repo}/releases/${release_id}" || true
+          done < <(gh api "repos/${repo}/releases" --paginate \
+            --jq '.[] | select(.tag_name == "nightly") | .id')
+          gh api -X DELETE "repos/${repo}/git/refs/tags/nightly" 2>/dev/null || true
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
@@ -154,7 +159,6 @@ jobs:
           name: nightly
           target_commitish: ${{ github.sha }}
           prerelease: true
-          make_latest: true
           body: |
             Rolling pre-release build from [`main`](https://github.com/${{ github.repository }}/tree/main) @ [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}).
           files: release/*
