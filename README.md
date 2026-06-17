@@ -160,12 +160,22 @@ Common flags: `--tps` replaces allowed content with the filter's response body; 
 
 ## Filter contract
 
-Your filter receives a `POST` with the **raw response bytes** as the body.
+Guardian targets the [trypanophobe](https://github.com/Sparse-Dynamix/trypanophobe) filter API. Set `--tpf` to the full path (e.g. `http://127.0.0.1:8080/api/filter` or `GUARDIAN_TRYPANOPHOBE_FILTER`).
 
-- For HTTP responses, Guardian appends `?url=<request-url>` to the filter URL.
-- **200** → allow (forward to the agent).
-- **Any other status** → block (agent sees a safety message instead).
-- With `--tps`, a `200` response body and headers **replace** what the agent would have seen.
+Your filter receives `POST` with **raw bytes** as the body and:
+
+- **`url` query (required)** — source URL for blocklist checks and format hints
+- **`format=md`** when `--tps` is set (default `og` otherwise)
+- **`Content-Type`** when known (upstream response type or payload type)
+
+Responses:
+
+- **`200`** → allow (forward to the agent)
+- **`206`** → partial safe markdown (`--tps` + `format=md` only)
+- **`406`** → block; Guardian surfaces the filter `reason`, `stage`, and `detail` in a clear message
+- **Other statuses** → block with the configured fallback message (`block_message`)
+
+With `--tps`, allowed `200`/`206` response bodies and headers **replace** what the agent would have seen.
 
 WebSocket server→client text and binary frames are checked the same way.
 

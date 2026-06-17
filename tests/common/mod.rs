@@ -418,6 +418,7 @@ pub struct TestServers {
     pub reject_url: String,
     pub swap_url: String,
     pub image_swap_url: String,
+    pub partial_url: String,
     pub http_get_url: String,
     pub http_post_url: String,
     pub http_image_png_url: String,
@@ -441,6 +442,7 @@ pub struct TpfMockServer {
     pub pass_url: String,
     pub reject_url: String,
     pub swap_url: String,
+    pub partial_url: String,
     servers: TestServers,
 }
 
@@ -513,6 +515,7 @@ pub fn spawn_test_servers(config: TestServersConfig) -> TestServers {
             .as_str()
             .expect("imageSwapUrl")
             .to_string(),
+        partial_url: tpf["partialUrl"].as_str().expect("partialUrl").to_string(),
         tpf_base_url: tpf["baseUrl"].as_str().expect("tpf baseUrl").to_string(),
         http_get_url: http["getUrl"].as_str().expect("getUrl").to_string(),
         http_post_url: http["postUrl"].as_str().expect("postUrl").to_string(),
@@ -613,6 +616,7 @@ fn tpf_from_servers(servers: TestServers) -> TpfMockServer {
         pass_url: servers.pass_url.clone(),
         reject_url: servers.reject_url.clone(),
         swap_url: servers.swap_url.clone(),
+        partial_url: servers.partial_url.clone(),
         servers,
     }
 }

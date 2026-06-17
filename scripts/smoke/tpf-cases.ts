@@ -54,7 +54,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     mode: "payload",
     tpf: "reject",
     expectExit: 1,
-    expectStdoutContains: "Blocked by Guardian",
+    expectStdoutContains: "All content chunks flagged",
   },
   {
     name: "payload_swap",
@@ -117,7 +117,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     mode: "mitm",
     tpf: "reject",
     expectExit: 0,
-    expectStdoutContains: "Blocked by Guardian",
+    expectStdoutContains: "All content chunks flagged",
     target: "remoteHttp",
   },
   {

@@ -12,7 +12,7 @@ Print this document anytime with `guardian security-notes`. Legal disclaimers an
 
 1. **Frida hooks** the child’s `connect()` / `WSAConnect` for outbound TCP (IPv4 and IPv6) and redirects eligible sockets to a local forward proxy.
 2. **Proxelar** accepts those connections, terminates TLS using a **Guardian-issued certificate** signed by a **local root CA**, decodes HTTP/HTTPS and WebSocket traffic, and buffers or streams response bodies as configured.
-3. **Trypanophobe filter** (`--tpf`) receives **plaintext** copies of HTTP response bodies, server→client WebSocket `Text`/`Binary` frames, and (in payload mode) tool-call payloads. A non-`200` response causes Guardian to **fail closed** and substitute a block message instead of forwarding content to the harness.
+3. **Trypanophobe filter** (`--tpf`) receives **plaintext** copies of HTTP response bodies, server→client WebSocket `Text`/`Binary` frames, and (in payload mode) tool-call payloads. **`200`** allows content; **`406`** blocks with an explicit reason parsed from JSON; other statuses fail closed with the configured `block_message` fallback.
 
 Cleartext HTTP and tunneled non-HTTP TCP may also pass through the proxy; only HTTP-family content and configured payloads are sent to the filter today.
 
@@ -40,7 +40,7 @@ When Wrapper mode runs with `--tpf`:
 
 - **All TLS** on hooked TCP connections that reach the proxy is **terminated and decrypted** at the proxy.
 - Response bodies (and per-event SSE payloads) are held in memory, posted to `--tpf`, and only then forwarded if allowed.
-- With `--tps` / `trypanophobe_swap`, a filter `200` response can **replace** what the harness sees (body and headers).
+- With `--tps` / `trypanophobe_swap`, filter `200` or `206` responses can **replace** what the harness sees (body and headers). Blocked `406` responses include human-readable `reason`, `stage`, and `detail` when the filter returns trypanophobe JSON.
 
 Guardian does **not** decrypt traffic for its own filter POST beyond what `reqwest` does for the `--tpf` URL scheme (see "Filter endpoint transport and plaintext exposure" below).
 
@@ -69,7 +69,7 @@ Full TLS decryption via a locally trusted root CA is **inherent to the MITM desi
 
 ### What the filter receives
 
-For every gated HTTP response, WebSocket frame, or tool payload, Guardian `POST`s the **raw bytes** of that content to `--tpf`. For HTTP responses, the request URL is appended as `?url=<request-url>`. The filter therefore sees the same plaintext the harness would have seen (modulo `--tps` substitution).
+For every gated HTTP response, WebSocket frame, or tool payload, Guardian `POST`s the **raw bytes** of that content to `--tpf` with required `url=` query and optional `Content-Type`. The filter therefore sees the same plaintext the harness would have seen (modulo `--tps` substitution).
 
 **The filter is a sensitive data processor.** Treat it like a logging pipeline with full access to agent traffic, credentials in responses, PII, API keys, and proprietary content.
 

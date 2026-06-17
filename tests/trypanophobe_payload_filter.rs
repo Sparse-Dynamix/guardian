@@ -17,9 +17,13 @@ fn payload_reject_with_tpf() {
     let run = run_guardian_payload_until(
         &["--tpf", &mock.reject_url, "--payload", "hello"],
         None,
-        |run| run.exit_code == 1 && run.stdout.contains("Blocked by Guardian"),
+        |run| {
+            run.exit_code == 1
+                && run.stdout.contains("All content chunks flagged")
+                && run.stdout.contains("Stage: Content moderation")
+        },
     )
     .expect("spawn guardian");
     assert_eq!(run.exit_code, 1);
-    assert!(run.stdout.contains("Blocked by Guardian"));
+    assert!(run.stdout.contains("All content chunks flagged"));
 }

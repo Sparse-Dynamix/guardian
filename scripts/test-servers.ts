@@ -28,10 +28,12 @@ export interface TestServersConfig {
 export interface TestServersManifest {
   tpf: {
     baseUrl: string;
+    filterUrl: string;
     passUrl: string;
     rejectUrl: string;
     swapUrl: string;
     imageSwapUrl: string;
+    partialUrl: string;
   };
   http: {
     baseUrl: string;
@@ -230,6 +232,112 @@ export async function startTestServers(
   const rejectNeedle = config.tpfRejectNeedle;
   const sseEvents = config.sseEvents ?? ["smoke-sse-alpha", "smoke-sse-beta"];
 
+  const blockedJson = (
+    stage: string,
+    reason: string,
+    detail?: string,
+  ): string =>
+    JSON.stringify({
+      error: "content_blocked",
+      stage,
+      reason,
+      detail,
+    });
+
+  const handleTpfFilter = (
+    req: IncomingMessage,
+    res: http.ServerResponse,
+    pathOnly: string,
+    body: Buffer,
+  ) => {
+    const rawUrl = req.url ?? "";
+    const query = new URLSearchParams(
+      rawUrl.includes("?") ? (rawUrl.split("?")[1] ?? "") : "",
+    );
+    const legacyMode =
+      pathOnly === "/pass"
+        ? "pass"
+        : pathOnly === "/reject"
+          ? "reject"
+          : pathOnly === "/swap"
+            ? "swap"
+            : pathOnly === "/image-swap"
+              ? "image-swap"
+              : null;
+    const mockMode = query.get("mock") ?? legacyMode;
+
+    if (pathOnly === "/api/filter" && !query.get("url")?.trim()) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("url query parameter is required");
+      return;
+    }
+
+    if (rejectNeedle && body.includes(rejectNeedle)) {
+      const payload = blockedJson(
+        "chunk_moderation",
+        "Content rejected by mock needle",
+        rejectNeedle,
+      );
+      res.writeHead(406, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(payload)),
+      });
+      res.end(payload);
+      return;
+    }
+
+    if (mockMode === "reject") {
+      const payload = blockedJson(
+        "chunk_moderation",
+        "All content chunks flagged",
+        "mock reject",
+      );
+      res.writeHead(406, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(payload)),
+      });
+      res.end(payload);
+      return;
+    }
+
+    if (mockMode === "partial") {
+      const partial = "PARTIAL_SAFE_MD";
+      res.writeHead(206, {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Content-Length": String(Buffer.byteLength(partial)),
+      });
+      res.end(partial);
+      return;
+    }
+
+    if (mockMode === "image-swap") {
+      if (!body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) {
+        res.writeHead(400);
+        res.end("expected PNG body");
+        return;
+      }
+      const bytes = Buffer.byteLength(IMAGE_SWAP_BODY);
+      res.writeHead(200, {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Content-Length": String(bytes),
+      });
+      res.end(IMAGE_SWAP_BODY);
+      return;
+    }
+
+    if (mockMode === "swap" || query.get("format") === "md") {
+      res.writeHead(200, {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Content-Length": String(Buffer.byteLength(swapBody)),
+      });
+      res.end(swapBody);
+      return;
+    }
+
+    res.writeHead(200, { "Content-Length": "0" });
+    res.end();
+  };
+
   const tpfServer = http.createServer(async (req, res) => {
     const pathOnly = (req.url ?? "").split("?")[0] ?? "";
     if (req.method === "GET" && pathOnly === "/_debug/requests") {
@@ -248,42 +356,14 @@ export async function startTestServers(
       bodyBase64: body.toString("base64"),
     });
 
-    if (rejectNeedle && body.includes(rejectNeedle)) {
-      res.writeHead(503, { "Content-Length": "0" });
-      res.end();
-      return;
-    }
-
-    if (pathOnly === "/pass") {
-      res.writeHead(200, { "Content-Length": "0" });
-      res.end();
-      return;
-    }
-    if (pathOnly === "/reject") {
-      res.writeHead(503, { "Content-Length": "0" });
-      res.end();
-      return;
-    }
-    if (pathOnly === "/swap") {
-      res.writeHead(200, {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Length": String(Buffer.byteLength(swapBody)),
-      });
-      res.end(swapBody);
-      return;
-    }
-    if (pathOnly === "/image-swap") {
-      if (!body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) {
-        res.writeHead(400);
-        res.end("expected PNG body");
-        return;
-      }
-      const bytes = Buffer.byteLength(IMAGE_SWAP_BODY);
-      res.writeHead(200, {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Length": String(bytes),
-      });
-      res.end(IMAGE_SWAP_BODY);
+    if (
+      pathOnly === "/api/filter" ||
+      pathOnly === "/pass" ||
+      pathOnly === "/reject" ||
+      pathOnly === "/swap" ||
+      pathOnly === "/image-swap"
+    ) {
+      handleTpfFilter(req, res, pathOnly, body);
       return;
     }
     res.writeHead(404);
@@ -421,10 +501,12 @@ export async function startTestServers(
   const manifest: TestServersManifest = {
     tpf: {
       baseUrl: tpfBase,
-      passUrl: `${tpfBase}/pass`,
-      rejectUrl: `${tpfBase}/reject`,
-      swapUrl: `${tpfBase}/swap`,
-      imageSwapUrl: `${tpfBase}/image-swap`,
+      filterUrl: `${tpfBase}/api/filter`,
+      passUrl: `${tpfBase}/api/filter`,
+      rejectUrl: `${tpfBase}/api/filter?mock=reject`,
+      swapUrl: `${tpfBase}/api/filter?mock=swap`,
+      imageSwapUrl: `${tpfBase}/api/filter?mock=image-swap`,
+      partialUrl: `${tpfBase}/api/filter?mock=partial`,
     },
     http: {
       baseUrl: httpBase,

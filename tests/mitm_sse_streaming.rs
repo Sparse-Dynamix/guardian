@@ -63,7 +63,7 @@ fn mitm_sse_streaming_blocks_on_rejected_chunk() {
     assert_eq!(run.exit_code, 0, "stderr:\n{}", run.stderr);
     assert!(run.stdout.contains("\"id\":0"), "stdout:\n{}", run.stdout);
     assert!(
-        run.stdout.contains("Blocked by Guardian"),
+        run.stdout.contains("Content rejected by mock needle"),
         "stdout:\n{}",
         run.stdout
     );

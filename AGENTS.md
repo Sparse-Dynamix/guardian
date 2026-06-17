@@ -76,7 +76,22 @@ guardian/
 
 ## Trypanophobe API
 
-POST **raw bytes** to `--tpf` URL. HTTP responses add `?url=<request-url>` only. `200` = allow; any other status = block (fail closed). With `--tps` / `trypanophobe_swap`, a `200` response body and headers replace what the harness sees.
+Reference backend: [Sparse-Dynamix/trypanophobe](https://github.com/Sparse-Dynamix/trypanophobe). Set `--tpf` to the full filter path (e.g. `http://127.0.0.1:8080/api/filter`).
+
+Guardian `POST`s **raw bytes** as the body with:
+
+- **`url` query (required)** — source URL (`http(s)://…` for HTTP responses, `guardian://payload` for tool payloads, WebSocket upgrade URL or `guardian://websocket/…` for WS frames)
+- **`format` query** — omitted (default `og`) unless `--tps` is set, then `format=md`
+- **`Content-Type` header** — upstream response type, SSE `text/event-stream`, or payload `application/octet-stream`
+
+Responses:
+
+- **`200`** — allow (forward original unless `--tps`)
+- **`206`** — partial safe markdown (`format=md` + `--tps` only)
+- **`406`** — block; JSON `error`, `stage`, `reason`, `detail` formatted into an explicit user-facing message
+- **Other statuses** — block with configured `block_message` fallback
+
+With `--tps` / `trypanophobe_swap`, allowed `200`/`206` response bodies and headers replace what the harness sees.
 
 ## Build
 
@@ -98,7 +113,7 @@ cargo build --release
 npm run smoke
 ```
 
-TPF mock endpoints: `POST /pass` → 200 empty; `POST /reject` → 503; `POST /swap` → 200 `SWAPPED_BODY`; `POST /image-swap` → 200 markdown (PNG body in POST).
+TPF mock: `POST /api/filter?url=…` — `200` pass; `?mock=reject` → `406` JSON; `?mock=swap` + `format=md` → markdown swap; `?mock=partial` → `206` partial markdown.
 
 ## Configuration reference
 

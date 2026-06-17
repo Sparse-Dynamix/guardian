@@ -1,6 +1,6 @@
 bind = "127.0.0.1"
 # port = 8080   # optional; omit for auto free port in [port_min, port_max]
-# trypanophobe_filter = "http://127.0.0.1:3000/pass"
+# trypanophobe_filter = "http://127.0.0.1:8080/api/filter"
 # trypanophobe_swap = true   # requires trypanophobe_filter; swap harness content with TPF response
 # filter — JS expression (sa_family, addr, port, host); omit for denylist mode (hook all TCP except ignored_ports)
 # filter = "host && /\.example\\.com$/.test(host)"
@@ -12,7 +12,7 @@ ca_dir = "~/.guardian"
 # skip_cert_regen = true   # reuse existing CA on disk instead of rotating each MITM run
 
 filter_timeout_secs = 10
-block_message = "Blocked by Guardian: content failed safety check"
+block_message = "Blocked by Guardian: content failed safety check"  # fallback when filter returns non-406 or unparseable body
 
 port_min = 1024
 port_max = 65535

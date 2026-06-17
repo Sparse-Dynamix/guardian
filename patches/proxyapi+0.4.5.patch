@@ -24,7 +24,7 @@ index 6930bbf..0465e82 100644
  openssl = { version = "0.10.79", features = ["vendored"] }
  moka = { version = "0.12", features = ["future"] }
 diff --git a/src/body.rs b/src/body.rs
-index df82827..604c0df 100644
+index df82827..a1483ad 100644
 --- a/src/body.rs
 +++ b/src/body.rs
 @@ -1,11 +1,15 @@
@@ -46,7 +46,7 @@ index df82827..604c0df 100644
  /// Boxed HTTP body type used throughout the proxy.
  ///
  /// Erases the concrete body type so that both `Full` (captured) and `Empty`
-@@ -248,6 +252,246 @@ pub fn empty() -> ProxyBody {
+@@ -248,6 +252,253 @@ pub fn empty() -> ProxyBody {
          .boxed()
  }
  
@@ -103,6 +103,7 @@ index df82827..604c0df 100644
 +        let url = self.url.clone();
 +        let scheme = self.scheme.clone();
 +        let status = self.status;
++        let sse_mode = self.sse_mode;
 +        let result = Arc::clone(&self.filter_result);
 +        let done = Arc::clone(&self.filter_done);
 +        self.current_unit = Some(unit.clone());
@@ -110,12 +111,18 @@ index df82827..604c0df 100644
 +        self.filter_done.store(false, Ordering::Release);
 +        *self.filter_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
 +        tokio::spawn(async move {
++            let content_type = if sse_mode {
++                Some("text/event-stream")
++            } else {
++                None
++            };
 +            let verdict = filter
 +                .check_http_response(HttpFilterContext {
 +                    method: &method,
 +                    url: &url,
 +                    status,
 +                    scheme: &scheme,
++                    content_type,
 +                    body: &unit,
 +                })
 +                .await;
@@ -397,10 +404,10 @@ index 4d4e883..e7c4d47 100644
 +}
 diff --git a/src/content_filter.rs b/src/content_filter.rs
 new file mode 100644
-index 0000000..68a5cf7
+index 0000000..31fb7a5
 --- /dev/null
 +++ b/src/content_filter.rs
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,41 @@
 +use async_trait::async_trait;
 +use bytes::Bytes;
 +
@@ -410,6 +417,7 @@ index 0000000..68a5cf7
 +    pub url: &'a str,
 +    pub status: u16,
 +    pub scheme: &'a str,
++    pub content_type: Option<&'a str>,
 +    pub body: &'a [u8],
 +}
 +
@@ -417,6 +425,7 @@ index 0000000..68a5cf7
 +pub struct WsFilterContext<'a> {
 +    pub direction: &'a str,
 +    pub opcode: &'a str,
++    pub url: Option<&'a str>,
 +    pub payload: &'a [u8],
 +}
 +
@@ -441,7 +450,7 @@ index 0000000..68a5cf7
 +    async fn check_ws_frame(&self, ctx: WsFilterContext<'_>) -> FilterVerdict;
 +}
 diff --git a/src/handler.rs b/src/handler.rs
-index f73ac81..8a7f4c0 100644
+index f73ac81..b6afaa1 100644
 --- a/src/handler.rs
 +++ b/src/handler.rs
 @@ -1,6 +1,5 @@
@@ -732,7 +741,7 @@ index f73ac81..8a7f4c0 100644
              }
          }
      }
-@@ -536,36 +622,104 @@ impl CapturingHandler {
+@@ -536,36 +622,110 @@ impl CapturingHandler {
          }
      }
  
@@ -794,11 +803,17 @@ index f73ac81..8a7f4c0 100644
 +            "http"
 +        };
 +
++        let content_type = parts
++            .headers
++            .get(http::header::CONTENT_TYPE)
++            .and_then(|value| value.to_str().ok());
++
 +        let ctx = HttpFilterContext {
 +            method: &method,
 +            url: &url,
 +            status: parts.status.as_u16(),
 +            scheme,
++            content_type,
 +            body: &body,
 +        };
 +
@@ -841,7 +856,7 @@ index f73ac81..8a7f4c0 100644
      fn emit_captured_response(&mut self, parts: http::response::Parts, body_bytes: Bytes) {
          let hooked = self.apply_response_hook_to_snapshot(parts, body_bytes);
          let HookedResponse { parts, body } = hooked;
-@@ -845,7 +999,11 @@ impl HttpHandler for CapturingHandler {
+@@ -845,7 +1005,11 @@ impl HttpHandler for CapturingHandler {
                  };
                  // Non-blocking send: if the channel is full, skip interception
                  // and fall through to normal forwarding so the request isn't lost.
@@ -854,7 +869,7 @@ index f73ac81..8a7f4c0 100644
                      cfg.resolve(id, InterceptDecision::Forward);
                      tracing::warn!("Event channel full, skipping intercept for id={id}");
                  } else {
-@@ -935,10 +1093,57 @@ mod tests {
+@@ -935,10 +1099,57 @@ mod tests {
          response.into_body().collect().await.unwrap().to_bytes()
      }
  
@@ -913,7 +928,7 @@ index f73ac81..8a7f4c0 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let debug = format!("{handler:?}");
-@@ -955,7 +1160,7 @@ mod tests {
+@@ -955,7 +1166,7 @@ mod tests {
      #[tokio::test]
      async fn finish_buffered_response_uses_pending_id_and_rebuilds_response_body() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -922,7 +937,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(77);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -967,7 +1172,7 @@ mod tests {
+@@ -967,7 +1178,7 @@ mod tests {
              .into_parts();
          parts.version = Version::HTTP_11;
  
@@ -931,7 +946,7 @@ index f73ac81..8a7f4c0 100644
  
          assert_eq!(body_bytes(response).await.as_ref(), b"accepted");
          match event_rx.recv().await.unwrap() {
-@@ -989,14 +1194,14 @@ mod tests {
+@@ -989,14 +1200,14 @@ mod tests {
      #[tokio::test]
      async fn finish_buffered_response_without_captured_request_sends_no_event() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -948,7 +963,7 @@ index f73ac81..8a7f4c0 100644
  
          assert!(body_bytes(response).await.is_empty());
          assert!(event_rx.try_recv().is_err());
-@@ -1005,7 +1210,7 @@ mod tests {
+@@ -1005,7 +1216,7 @@ mod tests {
      #[tokio::test]
      async fn synthetic_response_returns_body_and_emits_completion() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -957,7 +972,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(78);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1039,7 +1244,7 @@ mod tests {
+@@ -1039,7 +1250,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_forwards_full_body_and_emits_capped_snapshots() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -966,7 +981,7 @@ index f73ac81..8a7f4c0 100644
          handler.body_capture_limit = Some(4);
          handler.pending_id = Some(88);
  
-@@ -1085,7 +1290,7 @@ mod tests {
+@@ -1085,7 +1296,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_emits_partial_capture_when_body_is_dropped() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -975,7 +990,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(90);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1117,7 +1322,7 @@ mod tests {
+@@ -1117,7 +1328,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_emits_for_already_empty_body() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -984,7 +999,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(89);
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
-@@ -1148,7 +1353,7 @@ mod tests {
+@@ -1148,7 +1359,7 @@ mod tests {
      #[tokio::test]
      async fn stream_response_waits_for_streaming_request_capture_before_empty_response_event() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -993,7 +1008,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(91);
  
          let (req_parts, _) = Request::builder()
-@@ -1223,7 +1428,7 @@ mod tests {
+@@ -1223,7 +1434,7 @@ mod tests {
      #[tokio::test]
      async fn handle_replayed_request_forwards_without_intercept() {
          let (event_tx, _event_rx) = mpsc::channel(1);
@@ -1002,7 +1017,7 @@ index f73ac81..8a7f4c0 100644
  
          let request = handler
              .handle_replayed_request(proxied_request())
-@@ -1245,7 +1450,7 @@ mod tests {
+@@ -1245,7 +1456,7 @@ mod tests {
      #[test]
      fn take_pending_id_and_event_sender_clone_return_internal_state() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -1011,7 +1026,7 @@ index f73ac81..8a7f4c0 100644
          handler.pending_id = Some(123);
  
          assert_eq!(handler.take_pending_id(), Some(123));
-@@ -1268,7 +1473,7 @@ mod tests {
+@@ -1268,7 +1479,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -1020,7 +1035,7 @@ index f73ac81..8a7f4c0 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1306,7 +1511,7 @@ mod tests {
+@@ -1306,7 +1517,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -1029,7 +1044,7 @@ index f73ac81..8a7f4c0 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1335,7 +1540,7 @@ mod tests {
+@@ -1335,7 +1546,7 @@ mod tests {
          let (event_tx, mut event_rx) = mpsc::channel(4);
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -1038,7 +1053,7 @@ index f73ac81..8a7f4c0 100644
  
          let task =
              tokio::spawn(async move { handler.handle_replayed_request(proxied_request()).await });
-@@ -1376,7 +1581,7 @@ mod tests {
+@@ -1376,7 +1587,7 @@ mod tests {
              .unwrap();
          let intercept = InterceptConfig::new();
          intercept.set_enabled(true);
@@ -1047,7 +1062,7 @@ index f73ac81..8a7f4c0 100644
  
          let request = handler
              .handle_replayed_request(proxied_request())
-@@ -1393,7 +1598,7 @@ mod tests {
+@@ -1393,7 +1604,7 @@ mod tests {
      #[tokio::test]
      async fn send_event_drops_full_or_closed_channels_without_panicking() {
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -1056,7 +1071,7 @@ index f73ac81..8a7f4c0 100644
          handler.send_event(ProxyEvent::Error {
              message: "first".to_owned(),
          });
-@@ -1430,7 +1635,7 @@ mod tests {
+@@ -1430,7 +1641,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -1065,7 +1080,7 @@ index f73ac81..8a7f4c0 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let (parts, _) = Response::builder()
-@@ -1439,7 +1644,7 @@ mod tests {
+@@ -1439,7 +1650,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -1074,7 +1089,7 @@ index f73ac81..8a7f4c0 100644
  
          assert_eq!(response.status(), StatusCode::CREATED);
          assert_eq!(response.headers()["x-script"], "yes");
-@@ -1473,7 +1678,7 @@ mod tests {
+@@ -1473,7 +1684,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, _event_rx) = mpsc::channel(1);
@@ -1083,7 +1098,7 @@ index f73ac81..8a7f4c0 100644
  
          let (parts, _) = Response::builder()
              .status(StatusCode::OK)
-@@ -1481,7 +1686,7 @@ mod tests {
+@@ -1481,7 +1692,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -1092,7 +1107,7 @@ index f73ac81..8a7f4c0 100644
  
          assert_eq!(response.status(), StatusCode::OK);
          assert_eq!(body_bytes(response).await.as_ref(), b"original");
-@@ -1506,7 +1711,7 @@ mod tests {
+@@ -1506,7 +1717,7 @@ mod tests {
  
          let engine = Arc::new(crate::scripting::ScriptEngine::new(file.path()).unwrap());
          let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -1101,7 +1116,7 @@ index f73ac81..8a7f4c0 100644
          handler.captured_request = Some(CapturedRequest::buffered(proxied_request()));
  
          let (parts, _) = Response::builder()
-@@ -1516,7 +1721,7 @@ mod tests {
+@@ -1516,7 +1727,7 @@ mod tests {
              .unwrap()
              .into_parts();
  
@@ -1133,7 +1148,7 @@ index 431cbc7..9f95ab3 100644
  pub use event::ProxyEvent;
  pub use handler::{CapturingHandler, DEFAULT_BODY_CAPTURE_LIMIT};
 diff --git a/src/proxy/forward.rs b/src/proxy/forward.rs
-index 23cea08..2fd981f 100644
+index 23cea08..45d8c8b 100644
 --- a/src/proxy/forward.rs
 +++ b/src/proxy/forward.rs
 @@ -7,6 +7,7 @@ use http::uri::{Authority, Scheme};
@@ -1647,7 +1662,23 @@ index 23cea08..2fd981f 100644
          Ok(res) => {
              if is_ws && res.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
                  return Ok(upgrade_websocket_response(res, handler, client_on_upgrade));
-@@ -367,8 +590,16 @@ fn upgrade_websocket_response(
+@@ -357,18 +580,31 @@ fn upgrade_websocket_response(
+     let conn_id = handler
+         .take_pending_id()
+         .unwrap_or_else(crate::event::next_id);
+-    if let Some(captured_req) = handler.take_captured_request() {
++    let ws_request_url = if let Some(captured_req) = handler.take_captured_request() {
++        let url = captured_req.uri().to_string();
+         handler.send_event(ProxyEvent::WebSocketConnected {
+             id: conn_id,
+             request: Box::new(captured_req),
+             response: Box::new(ws_response),
+         });
+-    }
++        Some(url)
++    } else {
++        None
++    };
  
      if let Some(client_fut) = client_on_upgrade {
          let event_tx = handler.event_tx_clone();
@@ -1660,12 +1691,13 @@ index 23cea08..2fd981f 100644
 +                server_on_upgrade,
 +                event_tx,
 +                content_filter,
++                ws_request_url,
 +            )
 +            .await;
          });
      }
  
-@@ -426,23 +657,66 @@ impl TunnelRequestError {
+@@ -426,23 +662,66 @@ impl TunnelRequestError {
      }
  }
  
@@ -1733,7 +1765,7 @@ index 23cea08..2fd981f 100644
              return Ok((StreamProtocol::Tls, Bytes::copy_from_slice(prefix)));
          }
          if is_h2_preface(prefix) || is_http1_request(prefix) {
-@@ -462,6 +736,11 @@ where
+@@ -462,6 +741,11 @@ where
  }
  
  fn classify_buffered_protocol(buffered: &[u8]) -> StreamProtocol {
@@ -1745,7 +1777,7 @@ index 23cea08..2fd981f 100644
      if is_tls_handshake(buffered) {
          StreamProtocol::Tls
      } else if is_h2_preface(buffered) || is_http1_request(buffered) {
-@@ -475,6 +754,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
+@@ -475,6 +759,97 @@ fn is_tls_handshake(buffered: &[u8]) -> bool {
      buffered.len() >= 2 && buffered[0] == TLS_RECORD_HANDSHAKE && buffered[1] == TLS_VERSION_MAJOR
  }
  
@@ -1843,22 +1875,24 @@ index 23cea08..2fd981f 100644
  fn is_h2_preface(buffered: &[u8]) -> bool {
      buffered == H2_PREFACE
  }
-@@ -507,7 +877,8 @@ async fn pump_websocket_frames(
+@@ -507,7 +882,9 @@ async fn pump_websocket_frames(
      conn_id: u64,
      client_on_upgrade: hyper::upgrade::OnUpgrade,
      server_on_upgrade: hyper::upgrade::OnUpgrade,
 -    event_tx: mpsc::Sender<ProxyEvent>,
 +    event_tx: Option<mpsc::Sender<ProxyEvent>>,
 +    content_filter: Option<Arc<dyn ContentFilter>>,
++    ws_request_url: Option<String>,
  ) {
      let (client_upgraded, server_upgraded) =
          match tokio::try_join!(client_on_upgrade, server_on_upgrade) {
-@@ -548,6 +919,14 @@ async fn pump_websocket_frames(
+@@ -548,6 +925,15 @@ async fn pump_websocket_frames(
              },
              msg = server_ws.next() => match msg {
                  Some(Ok(frame)) => {
 +                    if let Some(FilterVerdict::Block { message }) =
-+                        filter_server_ws_frame(&content_filter, &frame).await
++                        filter_server_ws_frame(&content_filter, ws_request_url.as_deref(), &frame)
++                            .await
 +                    {
 +                        let text = String::from_utf8_lossy(&message).into_owned();
 +                        let _ = client_ws.send(Message::Text(text.into())).await;
@@ -1868,7 +1902,7 @@ index 23cea08..2fd981f 100644
                      emit_ws_frame(&event_tx, conn_id, &frame, WsDirection::ServerToClient);
                      if client_ws.send(frame).await.is_err() { break; }
                  }
-@@ -560,12 +939,37 @@ async fn pump_websocket_frames(
+@@ -560,12 +946,39 @@ async fn pump_websocket_frames(
          }
      }
  
@@ -1880,6 +1914,7 @@ index 23cea08..2fd981f 100644
 +
 +async fn filter_server_ws_frame(
 +    filter: &Option<Arc<dyn ContentFilter>>,
++    ws_request_url: Option<&str>,
 +    frame: &Message,
 +) -> Option<FilterVerdict> {
 +    let filter = filter.as_ref()?;
@@ -1891,6 +1926,7 @@ index 23cea08..2fd981f 100644
 +    let ctx = WsFilterContext {
 +        direction: "server_to_client",
 +        opcode,
++        url: ws_request_url,
 +        payload,
 +    };
 +    let verdict = filter.check_ws_frame(ctx).await;
@@ -1908,7 +1944,7 @@ index 23cea08..2fd981f 100644
      conn_id: u64,
      msg: &Message,
      direction: WsDirection,
-@@ -582,10 +986,12 @@ fn emit_ws_frame(
+@@ -582,10 +995,12 @@ fn emit_ws_frame(
      let limit = MAX_WS_FRAME_PAYLOAD.unwrap_or(raw.len());
      let truncated = raw.len() > limit;
      let payload = Bytes::copy_from_slice(&raw[..raw.len().min(limit)]);
@@ -1925,7 +1961,7 @@ index 23cea08..2fd981f 100644
  }
  
  /// Send a previously captured request back through the proxy pipeline.
-@@ -595,12 +1001,17 @@ fn emit_ws_frame(
+@@ -595,12 +1010,17 @@ fn emit_ws_frame(
  pub(crate) async fn handle_replay(
      req: ProxiedRequest,
      mut handler: CapturingHandler,
@@ -1945,7 +1981,7 @@ index 23cea08..2fd981f 100644
          Ok(res) => {
              handler.record_upstream_response(res).await;
          }
-@@ -669,7 +1080,12 @@ mod tests {
+@@ -669,7 +1089,12 @@ mod tests {
              req.headers().get_all(hyper::header::COOKIE).iter().count(),
              1
          );
@@ -1960,10 +1996,10 @@ index 23cea08..2fd981f 100644
  
      #[test]
 diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
-index d0849f8..5e53286 100644
+index d0849f8..57b413f 100644
 --- a/src/proxy/mod.rs
 +++ b/src/proxy/mod.rs
-@@ -13,7 +13,7 @@ use hyper::rt::{Read, Write};
+@@ -13,14 +13,16 @@ use hyper::rt::{Read, Write};
  use hyper::service::Service;
  use hyper::{HeaderMap, Request, Response, Uri};
  use hyper_util::client::legacy::connect::HttpConnector;
@@ -1972,7 +2008,9 @@ index d0849f8..5e53286 100644
  use hyper_util::server::conn::auto;
  use proxyapi_models::ProxiedRequest;
  use tokio::net::TcpListener;
-@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
+-use tokio::sync::mpsc;
++use tokio::sync::{mpsc, oneshot};
++use tokio::task::JoinSet;
  
  use crate::body::ProxyBody;
  use crate::ca::Ssl;
@@ -1980,7 +2018,7 @@ index d0849f8..5e53286 100644
  use crate::error::Error;
  use crate::event::ProxyEvent;
  use crate::handler::CapturingHandler;
-@@ -35,6 +36,42 @@ pub(crate) type Client =
+@@ -35,6 +37,42 @@ pub(crate) type Client =
      hyper_util::client::legacy::Client<hyper_rustls::HttpsConnector<HttpConnector>, ProxyBody>;
  pub(crate) type BoxError = Box<dyn StdError + Send + Sync>;
  
@@ -2023,7 +2061,7 @@ index d0849f8..5e53286 100644
  const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
  const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
  
-@@ -68,6 +105,49 @@ where
+@@ -68,6 +106,49 @@ where
      builder.serve_connection_with_upgrades(io, service).await
  }
  
@@ -2073,7 +2111,7 @@ index d0849f8..5e53286 100644
  /// Prepare a captured request for the upstream HTTP/1.1 client.
  ///
  /// This centralizes the proxy's existing invariants and strips hop-by-hop
-@@ -78,7 +158,6 @@ pub(crate) fn prepare_upstream_request(mut req: Request<ProxyBody>) -> Request<P
+@@ -78,7 +159,6 @@ pub(crate) fn prepare_upstream_request(mut req: Request<ProxyBody>) -> Request<P
      req.headers_mut().remove(PROXY_AUTHORIZATION);
      req.headers_mut().remove(TE);
      join_cookie_headers(req.headers_mut());
@@ -2081,7 +2119,7 @@ index d0849f8..5e53286 100644
      req
  }
  
-@@ -101,9 +180,22 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
+@@ -101,9 +181,22 @@ fn sanitize_response_for_http2<B>(res: &mut Response<B>) {
      res.headers_mut().remove(TE);
  }
  
@@ -2104,7 +2142,7 @@ index d0849f8..5e53286 100644
      }
  }
  
-@@ -152,8 +244,10 @@ pub struct ProxyConfig {
+@@ -152,8 +245,10 @@ pub struct ProxyConfig {
      pub addr: SocketAddr,
      /// Forward or reverse proxy mode.
      pub mode: ProxyMode,
@@ -2117,7 +2155,26 @@ index d0849f8..5e53286 100644
      /// Directory for CA certificate and key files.
      pub ca_dir: PathBuf,
      /// Upstream HTTPS server trust policy.
-@@ -222,15 +316,7 @@ impl Proxy {
+@@ -169,6 +264,8 @@ pub struct ProxyConfig {
+     pub script_path: Option<PathBuf>,
+     /// Optional channel for receiving replay requests from the UI.
+     pub replay_rx: Option<mpsc::Receiver<ProxiedRequest>>,
++    /// Optional one-shot signaled after the listen socket is bound.
++    pub ready_tx: Option<oneshot::Sender<()>>,
+ }
+ 
+ /// Whether the proxy operates in forward (CONNECT tunneling) or reverse mode.
+@@ -197,6 +294,9 @@ impl Proxy {
+     /// Start the proxy and run until the `shutdown` future resolves.
+     pub async fn start(self, shutdown: impl Future<Output = ()>) -> Result<(), Error> {
+         let listener = TcpListener::bind(self.config.addr).await?;
++        if let Some(tx) = self.config.ready_tx {
++            let _ = tx.send(());
++        }
+         tracing::info!("Proxy listening on {}", self.config.addr);
+ 
+         // Load Lua script engine if a script path was provided.
+@@ -222,17 +322,10 @@ impl Proxy {
          }
  
          let tls_config = tls::build_client_config(&self.config.upstream_tls)?;
@@ -2133,8 +2190,11 @@ index d0849f8..5e53286 100644
 +        let client = Arc::new(UpstreamClients::build(tls_config));
  
          let mut replay_rx = self.config.replay_rx;
++        let mut connections = JoinSet::new();
  
-@@ -251,6 +337,9 @@ impl Proxy {
+         tokio::pin!(shutdown);
+ 
+@@ -251,6 +344,9 @@ impl Proxy {
                      if let Some(ref ic) = self.config.intercept {
                          handler = handler.with_intercept(Arc::clone(ic));
                      }
@@ -2144,7 +2204,35 @@ index d0849f8..5e53286 100644
                      #[cfg(feature = "scripting")]
                      if let Some(ref engine) = script_engine {
                          handler = handler.with_script_engine(Arc::clone(engine));
-@@ -279,6 +368,9 @@ impl Proxy {
+@@ -261,15 +357,21 @@ impl Proxy {
+                     match &self.config.mode {
+                         ProxyMode::Forward => {
+                             let listen_addr = self.config.addr;
+-                            tokio::spawn(forward::handle_connection(
+-                                stream, remote_addr, handler, ca, client, listen_addr,
+-                            ));
++                            connections.spawn(async move {
++                                forward::handle_connection(
++                                    stream, remote_addr, handler, ca, client, listen_addr,
++                                )
++                                .await;
++                            });
+                         }
+                         ProxyMode::Reverse { target } => {
+                             let target = target.clone();
+-                            tokio::spawn(reverse::handle_connection(
+-                                stream, remote_addr, handler, target, client,
+-                            ));
++                            connections.spawn(async move {
++                                reverse::handle_connection(
++                                    stream, remote_addr, handler, target, client,
++                                )
++                                .await;
++                            });
+                         }
+                     }
+                 }
+@@ -279,11 +381,22 @@ impl Proxy {
                      if let Some(ref ic) = self.config.intercept {
                          handler = handler.with_intercept(Arc::clone(ic));
                      }
@@ -2154,7 +2242,31 @@ index d0849f8..5e53286 100644
                      #[cfg(feature = "scripting")]
                      if let Some(ref engine) = script_engine {
                          handler = handler.with_script_engine(Arc::clone(engine));
-@@ -334,7 +426,8 @@ mod tests {
+                     }
+-                    tokio::spawn(forward::handle_replay(req, handler, Arc::clone(&client)));
++                    let client = Arc::clone(&client);
++                    connections.spawn(async move {
++                        forward::handle_replay(req, handler, client).await;
++                    });
++                }
++                Some(res) = connections.join_next(), if !connections.is_empty() => {
++                    if let Err(e) = res {
++                        tracing::warn!("Connection task failed: {e}");
++                    }
+                 }
+                 () = &mut shutdown => {
+                     tracing::info!("Proxy shutting down");
+@@ -292,6 +405,9 @@ impl Proxy {
+             }
+         }
+ 
++        connections.shutdown().await;
++        while connections.join_next().await.is_some() {}
++
+         Ok(())
+     }
+ }
+@@ -334,7 +450,8 @@ mod tests {
              mode: ProxyMode::Reverse {
                  target: "http://example.test".parse().unwrap(),
              },
@@ -2164,7 +2276,15 @@ index d0849f8..5e53286 100644
              ca_dir: PathBuf::from("."),
              upstream_tls: UpstreamTlsConfig::Default,
              intercept: None,
-@@ -400,7 +493,7 @@ mod tests {
+@@ -342,6 +459,7 @@ mod tests {
+             #[cfg(feature = "scripting")]
+             script_path: None,
+             replay_rx: None,
++            ready_tx: None,
+         };
+ 
+         let proxy = Proxy::new(config);
+@@ -400,7 +518,7 @@ mod tests {
  
          let req = prepare_upstream_request(req);
  
@@ -2230,106 +2350,3 @@ index 00505ad..c0621b1 100644
  }
  
  impl<T> AsyncRead for Rewind<T>
-diff --git a/src/proxy/mod.rs b/src/proxy/mod.rs
---- a/src/proxy/mod.rs
-+++ b/src/proxy/mod.rs
-@@ -17,7 +17,8 @@
- use hyper_util::server::conn::auto;
- use proxyapi_models::ProxiedRequest;
- use tokio::net::TcpListener;
--use tokio::sync::mpsc;
-+use tokio::sync::{mpsc, oneshot};
-+use tokio::task::JoinSet;
- 
- use crate::body::ProxyBody;
- use crate::ca::Ssl;
-@@ -263,6 +264,8 @@
-     pub script_path: Option<PathBuf>,
-     /// Optional channel for receiving replay requests from the UI.
-     pub replay_rx: Option<mpsc::Receiver<ProxiedRequest>>,
-+    /// Optional one-shot signaled after the listen socket is bound.
-+    pub ready_tx: Option<oneshot::Sender<()>>,
- }
- 
- /// Whether the proxy operates in forward (CONNECT tunneling) or reverse mode.
-@@ -291,6 +294,9 @@
-     /// Start the proxy and run until the `shutdown` future resolves.
-     pub async fn start(self, shutdown: impl Future<Output = ()>) -> Result<(), Error> {
-         let listener = TcpListener::bind(self.config.addr).await?;
-+        if let Some(tx) = self.config.ready_tx {
-+            let _ = tx.send(());
-+        }
-         tracing::info!("Proxy listening on {}", self.config.addr);
- 
-         // Load Lua script engine if a script path was provided.
-@@ -319,6 +325,7 @@
-         let client = Arc::new(UpstreamClients::build(tls_config));
- 
-         let mut replay_rx = self.config.replay_rx;
-+        let mut connections = JoinSet::new();
- 
-         tokio::pin!(shutdown);
- 
-@@ -350,15 +357,21 @@
-                     match &self.config.mode {
-                         ProxyMode::Forward => {
-                             let listen_addr = self.config.addr;
--                            tokio::spawn(forward::handle_connection(
--                                stream, remote_addr, handler, ca, client, listen_addr,
--                            ));
-+                            connections.spawn(async move {
-+                                forward::handle_connection(
-+                                    stream, remote_addr, handler, ca, client, listen_addr,
-+                                )
-+                                .await;
-+                            });
-                         }
-                         ProxyMode::Reverse { target } => {
-                             let target = target.clone();
--                            tokio::spawn(reverse::handle_connection(
--                                stream, remote_addr, handler, target, client,
--                            ));
-+                            connections.spawn(async move {
-+                                reverse::handle_connection(
-+                                    stream, remote_addr, handler, target, client,
-+                                )
-+                                .await;
-+                            });
-                         }
-                     }
-                 }
-@@ -375,7 +388,15 @@
-                     if let Some(ref engine) = script_engine {
-                         handler = handler.with_script_engine(Arc::clone(engine));
-                     }
--                    tokio::spawn(forward::handle_replay(req, handler, Arc::clone(&client)));
-+                    let client = Arc::clone(&client);
-+                    connections.spawn(async move {
-+                        forward::handle_replay(req, handler, client).await;
-+                    });
-+                }
-+                Some(res) = connections.join_next(), if !connections.is_empty() => {
-+                    if let Err(e) = res {
-+                        tracing::warn!("Connection task failed: {e}");
-+                    }
-                 }
-                 () = &mut shutdown => {
-                     tracing::info!("Proxy shutting down");
-@@ -384,6 +405,9 @@
-             }
-         }
- 
-+        connections.shutdown().await;
-+        while connections.join_next().await.is_some() {}
-+
-         Ok(())
-     }
- }
-@@ -435,6 +459,7 @@
-             #[cfg(feature = "scripting")]
-             script_path: None,
-             replay_rx: None,
-+            ready_tx: None,
-         };
- 
-         let proxy = Proxy::new(config);
