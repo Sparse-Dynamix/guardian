@@ -208,6 +208,10 @@ pub fn run_injection_coordinated(
         &event_tx,
         root_pid,
     )
+    .map_err(|e| {
+        terminate_process_tree(root_pid);
+        e
+    })
     .context("failed to instrument root process")?;
 
     // Arm a blocking OS exit wait (pidfd / kqueue / process handle) before resume.

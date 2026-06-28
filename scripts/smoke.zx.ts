@@ -26,6 +26,18 @@ const servers = await startTestServers();
 try {
   await runSmokeCases(servers, { skip: ["interrupt_teardown"] });
   await runTpfSmokeCases(servers);
+  if (hostPlatform() === "mac") {
+    const release = path.join(REPO_ROOT, "target", "release");
+    for (const bin of [
+      "guardian",
+      "guardian-http-smoke",
+      "guardian-sleep",
+      "guardian-curl",
+    ]) {
+      await $({ nothrow: true })`pkill -9 -f ${path.join(release, bin)}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
   await runSmokeCases(servers, { only: ["interrupt_teardown"] });
 } finally {
   await servers.close();

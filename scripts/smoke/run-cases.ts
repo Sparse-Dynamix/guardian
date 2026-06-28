@@ -246,7 +246,7 @@ async function runInterrupt(servers: TestServers): Promise<RunResult> {
   let exitCode: number;
   try {
     await waitForListener(port, 20_000);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     child.kill("SIGINT");
     exitCode = await waitForExit(child, 25_000);
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -292,7 +292,9 @@ async function runCase(
       lastError = err;
       if (hostPlatform() === "mac" && c.command === "interrupt") {
         const config = platformConfig();
-        await $({ nothrow: true })`pkill -f ${config.guardianBin}`;
+        await $({ nothrow: true })`pkill -9 -f ${config.guardianBin}`;
+        await $({ nothrow: true })`pkill -9 -f ${config.interruptChild ?? "guardian-sleep"}`;
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
       if (attempt < SMOKE_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
