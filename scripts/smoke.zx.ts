@@ -24,8 +24,9 @@ if (hostPlatform() === "mac") {
 
 const servers = await startTestServers();
 try {
-  await runSmokeCases(servers);
+  await runSmokeCases(servers, { skip: ["interrupt_teardown"] });
   await runTpfSmokeCases(servers);
+  await runSmokeCases(servers, { only: ["interrupt_teardown"] });
 } finally {
   await servers.close();
 }

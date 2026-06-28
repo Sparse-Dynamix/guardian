@@ -307,15 +307,29 @@ async function runCase(
   throw lastError;
 }
 
-export async function runSmokeCases(servers: TestServers): Promise<void> {
+export async function runSmokeCases(
+  servers: TestServers,
+  options?: { only?: string[]; skip?: string[] },
+): Promise<void> {
   cdRepo();
   const config = platformConfig();
   assertGuardianBuilt(config);
 
   const url = process.env.SMOKE_URL ?? servers.http.getUrl;
+  let cases = smokeCases;
+  if (options?.only) {
+    const only = new Set(options.only);
+    cases = cases.filter((c) => only.has(c.name));
+  }
+  if (options?.skip) {
+    const skip = new Set(options.skip);
+    cases = cases.filter((c) => !skip.has(c.name));
+  }
 
-  for (const c of smokeCases) {
+  for (const c of cases) {
     await runCase(c, url, servers);
   }
-  console.log("All smoke cases passed.");
+  if (cases.length > 0) {
+    console.log("All smoke cases passed.");
+  }
 }
