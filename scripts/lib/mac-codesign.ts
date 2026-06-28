@@ -74,7 +74,6 @@ export async function prepareMacSmokePath(binDir: string): Promise<string> {
   fs.copyFileSync(signed, path.join(binDir, "curl"));
   await stageSignedEnv(binDir);
   await stageSignedPrintenv(binDir);
-  await stageSignedSleep(binDir);
   await stageSignedSh(binDir);
   return `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 }

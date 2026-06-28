@@ -57,6 +57,10 @@ name = "guardian-http-smoke"
 path = "src/bin/http_smoke.rs"
 
 [[bin]]
+name = "guardian-sleep"
+path = "src/bin/sleep_smoke.rs"
+
+[[bin]]
 name = "guardian-exit-code"
 path = "src/bin/exit_code.rs"
 

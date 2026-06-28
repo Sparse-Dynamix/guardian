@@ -34,5 +34,9 @@ const httpSmoke = path.join(releaseDir, "guardian-http-smoke");
 if (fs.existsSync(httpSmoke)) {
   await signGuardianBin(httpSmoke);
 }
+const sleepBin = path.join(releaseDir, "guardian-sleep");
+if (fs.existsSync(sleepBin)) {
+  await signGuardianBin(sleepBin);
+}
 await prepareMacSmokePath(releaseDir);
 console.log(`macOS smoke artifact: ${out}`);
