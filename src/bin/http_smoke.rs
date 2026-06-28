@@ -48,7 +48,9 @@ async fn run() -> Result<()> {
         }
     }
 
-    let url = url.context("usage: guardian-http-smoke [--http2|--http2-prior-knowledge] [--max-time SECS] <url>")?;
+    let url = url.context(
+        "usage: guardian-http-smoke [--http2|--http2-prior-knowledge] [--max-time SECS] <url>",
+    )?;
     if h2c_prior_knowledge {
         return run_h2c(&url, fail_on_http_error).await;
     }

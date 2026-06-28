@@ -13,8 +13,7 @@ fn direct_https_passthrough_runs_child() {
     }
 
     let servers = spawn_test_servers(TestServersConfig::default());
-    let run =
-        run_guardian_direct_https(&servers.http_get_url).expect("failed to spawn guardian");
+    let run = run_guardian_direct_https(&servers.http_get_url).expect("failed to spawn guardian");
     assert_child_success(&run);
     assert_no_jsonl_stderr(&run);
 }

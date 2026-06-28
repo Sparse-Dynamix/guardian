@@ -380,7 +380,10 @@ async function createTpfApp(
     const mockMode = query.get("mock") ?? legacyMode;
 
     if (pathOnly === "/api/filter" && !query.get("url")?.trim()) {
-      return reply.code(400).type("text/plain").send("url query parameter is required");
+      return reply
+        .code(400)
+        .type("text/plain")
+        .send("url query parameter is required");
     }
 
     if (rejectNeedle && body.includes(rejectNeedle)) {
@@ -438,9 +441,7 @@ async function createTpfApp(
     },
   );
 
-  app.get("/_debug/requests", async () =>
-    JSON.stringify(tpfRequests),
-  );
+  app.get("/_debug/requests", async () => JSON.stringify(tpfRequests));
 
   app.post("/*", async (request: FastifyRequest, reply) => {
     const rawUrl = request.url;

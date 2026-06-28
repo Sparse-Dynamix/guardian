@@ -142,7 +142,10 @@ async function freeLocalPort(): Promise<number> {
   });
 }
 
-async function waitForListener(port: number, timeoutMs = 10_000): Promise<void> {
+async function waitForListener(
+  port: number,
+  timeoutMs = 10_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ok = await new Promise<boolean>((resolve) => {
@@ -293,7 +296,9 @@ async function runCase(
       if (hostPlatform() === "mac" && c.command === "interrupt") {
         const config = platformConfig();
         await $({ nothrow: true })`pkill -9 -f ${config.guardianBin}`;
-        await $({ nothrow: true })`pkill -9 -f ${config.interruptChild ?? "guardian-sleep"}`;
+        await $({
+          nothrow: true,
+        })`pkill -9 -f ${config.interruptChild ?? "guardian-sleep"}`;
         await new Promise((resolve) => setTimeout(resolve, 5000));
       }
       if (attempt < SMOKE_RETRIES) {
