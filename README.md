@@ -1,8 +1,14 @@
 # Guardian
 
-[![Linux x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=Linux%20x86_64&logo=linux&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-linux-x86_64.tar.gz)
-[![macOS x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=macOS%20x86_64&logo=apple&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-mac-x86_64.tar.gz)
-[![Windows x86_64 nightly](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=Windows%20x86_64&logo=windows&logoColor=white)](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-win-x86_64.zip)
+[![nightly CI](https://img.shields.io/github/actions/workflow/status/Sparse-Dynamix/guardian/nightly.yml?branch=main&label=nightly&logo=github)](https://github.com/Sparse-Dynamix/guardian/actions/workflows/nightly.yml)
+
+| Platform | Download |
+|----------|----------|
+| Linux x86_64 | [`guardian-*-linux-x86_64.tar.gz`](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-linux-x86_64.tar.gz) |
+| Linux aarch64 | [`guardian-*-linux-aarch64.tar.gz`](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-linux-aarch64.tar.gz) |
+| macOS x86_64 | [`guardian-*-mac-x86_64.tar.gz`](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-mac-x86_64.tar.gz) |
+| macOS aarch64 | [`guardian-*-mac-aarch64.tar.gz`](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-mac-aarch64.tar.gz) |
+| Windows x86_64 | [`guardian-*-win-x86_64.zip`](https://github.com/Sparse-Dynamix/guardian/releases/download/nightly/guardian-1.0.0-beta-win-x86_64.zip) |
 
 > **1.0.0-beta** — experimental hardening aid, not a safety product. Read [`guardian security-notes`](SECURITY.md) and [NOTICE.txt](NOTICE.txt) before use.
 
@@ -20,11 +26,13 @@ You need a **filter URL** (`--tpf`): a server that accepts `POST` requests and r
 
 Get the latest build from **[Releases → nightly](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly)**.
 
-| OS | File | Binary |
-|----|------|--------|
-| Linux | `guardian-*-linux-x86_64.tar.gz` | `guardian` |
-| macOS | `guardian-*-mac-x86_64.tar.gz` | `guardian` |
-| Windows | `guardian-*-win-x86_64.zip` | `guardian.exe` |
+| OS | Arch | File | Binary |
+|----|------|------|--------|
+| Linux | x86_64, aarch64 | `guardian-*-linux-{arch}.tar.gz` | `guardian` |
+| macOS | x86_64, aarch64 | `guardian-*-mac-{arch}.tar.gz` | `guardian` |
+| Windows | x86_64 | `guardian-*-win-x86_64.zip` | `guardian.exe` |
+
+CI builds all five targets on every push to `main` and publishes them to the [nightly](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly) release.
 
 Each archive contains the binary, `LICENSE`, and `NOTICE.txt`. macOS builds also include `entitlements.plist` for ad-hoc signing.
 
@@ -35,19 +43,19 @@ Extract the archive and run the binary from that folder.
 ### 2. Install
 
 ```bash
-# Linux
+# Linux (pick the archive matching your CPU — x86_64 or aarch64)
 mkdir -p ~/guardian && cd ~/guardian
-gh release download nightly -R Sparse-Dynamix/guardian -p '*linux*'
-tar -xzf guardian-*-linux-x86_64.tar.gz
-chmod +x guardian-*-linux-x86_64/guardian
+gh release download nightly -R Sparse-Dynamix/guardian -p 'guardian-*-linux-*.tar.gz'
+tar -xzf guardian-*-linux-*.tar.gz
+chmod +x guardian-*-linux-*/guardian
 ```
 
 ```bash
-# macOS (sign once so macOS will run the binary)
+# macOS (sign once so macOS will run the binary; pick x86_64 or aarch64)
 mkdir -p ~/guardian && cd ~/guardian
-gh release download nightly -R Sparse-Dynamix/guardian -p '*mac*'
-tar -xzf guardian-*-mac-x86_64.tar.gz
-codesign -s - -f --entitlements guardian-*-mac-x86_64/entitlements.plist guardian-*-mac-x86_64/guardian
+gh release download nightly -R Sparse-Dynamix/guardian -p 'guardian-*-mac-*.tar.gz'
+tar -xzf guardian-*-mac-*.tar.gz
+codesign -s - -f --entitlements guardian-*-mac-*/entitlements.plist guardian-*-mac-*/guardian
 ```
 
 ```powershell
@@ -146,8 +154,8 @@ Do not pass a child program after `--` in payload mode.
 
 If you are an AI agent installing Guardian for a user, follow these steps in order:
 
-1. **Detect OS** (Linux, macOS, or Windows).
-2. **Download** the matching archive from [nightly](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly).
+1. **Detect OS and CPU** (Linux, macOS, or Windows; on Linux/macOS pick x86_64 or aarch64).
+2. **Download** the matching `guardian-*-{platform}-{arch}` archive from [nightly](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly).
 3. **Extract** to a stable path (e.g. `~/guardian` or `%USERPROFILE%\guardian`).
 4. **macOS only:** run `codesign` with the bundled `entitlements.plist` (see step 2 above).
 5. **Set `GUARDIAN_BIN`** to the full path of `guardian` / `guardian.exe`. No separate Frida install is required — it is linked into the binary.

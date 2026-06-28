@@ -62,16 +62,24 @@ Payload mode: `trypanophobe::run_payload` — read stdin/`--payload`, optional P
 ```
 guardian/
   src/
-    main.rs           # mode dispatch
-    trypanophobe.rs   # filter client + payload runner
-    proxy.rs          # Proxelar embed + ContentFilter
-    injector.rs       # Frida
+    main.rs              # mode dispatch
+    trypanophobe.rs      # filter client + payload runner
+    proxy.rs             # Proxelar embed + ContentFilter
+    injector.rs          # Frida
     ca.rs
+    bin/
+      http_smoke.rs      # signed MITM smoke client (mac/win; curl elsewhere)
+      sleep_smoke.rs     # Frida-safe sleep helper for interrupt smoke
   patches/proxyapi+0.4.5.patch   # SNI cert, Connection: close, ContentFilter, TPS swap
-  scripts/smoke/
-    test-servers.ts      # consolidated local HTTP/HTTP2/SSE/IPv6 + TPF mock (smoke + integration tests)
-    tpf-cases.ts
-    run-tpf-cases.ts
+  scripts/
+    smoke.zx.ts          # npm run smoke entry
+    test-servers.ts      # Fastify HTTP/1.1, HTTP/2, h2c, SSE, TPF mock (smoke + integration)
+    build-*-smoke.zx.ts  # release build + platform smoke helpers (mac codesign)
+    smoke/
+      cases.ts           # passthrough smoke cases
+      tpf-cases.ts       # MITM + TPF matrix
+      run-tpf-cases.ts
+      platform.ts        # per-OS child binaries (curl, http-smoke, sleep)
 ```
 
 ## Trypanophobe API
@@ -105,15 +113,23 @@ cargo build --release
 
 ## Testing
 
-**Cargo integration** — real Frida/proxy where needed; payload echo tests without network.
+**Cargo integration** — real Frida/proxy where needed; payload echo tests without network. Integration tests spawn `scripts/test-servers.ts` via `tests/common/mod.rs` (no remote httpbin/httpbingo).
 
-**Smoke** — `npm run smoke` builds release artifact, starts consolidated test servers (`scripts/test-servers.ts`), runs passthrough + TPF cases.
+**Local test servers** — Fastify + `@fastify/sse`. Origin servers bind `0.0.0.0`; MITM smoke targets use `firstNonLoopbackIPv4()` so loopback bypass (`127/8`) is exercised separately via `loopbackGetUrl`. TPF mock binds loopback only.
+
+**Smoke helpers** — `guardian-http-smoke` (Rust curl replacement for mac/win Frida attach) and `guardian-sleep` (interrupt teardown). macOS builds ad-hoc-sign them in `scripts/build-mac-smoke.zx.ts`.
+
+**Smoke** — `npm run smoke` patches, builds release artifacts, starts test servers, runs passthrough + TPF cases.
 
 ```bash
 npm run smoke
 ```
 
 TPF mock: `POST /api/filter?url=…` — `200` pass; `?mock=reject` → `406` JSON; `?mock=swap` + `format=md` → markdown swap; `?mock=partial` → `206` partial markdown.
+
+**Coverage** — `npm run coverage` on linux x64, mac x64, and win x64 (90% line gate). Ignore patterns live in `scripts/lib/coverage.ts` (path-separator agnostic for Windows `bin\…` paths). aarch64 CI jobs run smoke + pack only.
+
+**WSS** — `tests/websocket.rs` is `#[ignore]` until test-servers serves local WSS echo.
 
 ## Configuration reference
 
@@ -135,7 +151,19 @@ Shipped defaults: [`config/guardian.toml`](config/guardian.toml).
 
 ## Release binaries (nightly)
 
-CI publishes platform archives to the [`nightly`](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly) GitHub release tag (`npm run pack:release` after smoke + coverage).
+`.github/workflows/nightly.yml` builds five targets on every push to `main`:
+
+| Job | Smoke | Coverage (90% lines) | Pack |
+|-----|-------|----------------------|------|
+| linux x64 | yes | yes | yes |
+| linux aarch64 | yes | — | yes |
+| mac x64 | yes | yes | yes |
+| mac aarch64 | yes | — | yes |
+| win x64 | yes | yes | yes |
+
+The `release` job uploads all archives to the [`nightly`](https://github.com/Sparse-Dynamix/guardian/releases/tag/nightly) tag (`guardian-{version}-{platform}-{arch}.tar.gz` or `.zip` on Windows).
+
+Archive naming: `guardian-{version}-{platform}-{arch}` (e.g. `guardian-1.0.0-beta-linux-aarch64.tar.gz`).
 
 | Archive contents | Linux / Windows | macOS |
 |------------------|-----------------|-------|
