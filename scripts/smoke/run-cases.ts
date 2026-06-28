@@ -245,6 +245,12 @@ async function runInterrupt(servers: TestServers): Promise<RunResult> {
     }
   } catch (err) {
     child.kill("SIGKILL");
+    const errText = Buffer.concat(stderr).toString().trim();
+    if (errText) {
+      throw new Error(
+        `${err instanceof Error ? err.message : String(err)}\nstderr:\n${errText}`,
+      );
+    }
     throw err;
   }
 
@@ -274,6 +280,10 @@ async function runCase(
       );
     } catch (err) {
       lastError = err;
+      if (hostPlatform() === "mac" && c.command === "interrupt") {
+        const config = platformConfig();
+        await $({ nothrow: true })`pkill -f ${config.guardianBin}`;
+      }
       if (attempt < SMOKE_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         continue;
