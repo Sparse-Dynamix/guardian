@@ -14,6 +14,7 @@ permissions:
 jobs:
   build-linux-x64:
     name: build (linux x64)
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -60,6 +61,7 @@ jobs:
 
   build-mac-x64:
     name: build (mac x64)
+    if: false
     runs-on: [self-hosted, sparse-dynamics, macOS, X64]
     timeout-minutes: 30
     steps:
@@ -94,6 +96,7 @@ jobs:
 
   build-win-x64:
     name: build (win x64)
+    if: false
     runs-on: [self-hosted, sparse-dynamics, Windows, X64]
     timeout-minutes: 30
     defaults:
@@ -128,9 +131,78 @@ jobs:
           path: dist/guardian-*-win-x86_64.zip
           if-no-files-found: error
 
+  build-linux-aarch64:
+    name: build (linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Allow ptrace for Frida
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
+
+      - run: npm ci
+
+      - name: Smoke (patch, build, unit, integration)
+        run: npm run smoke
+
+      - name: Pack release archive
+        run: npm run pack:release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guardian-linux-aarch64
+          path: dist/guardian-*-linux-aarch64.tar.gz
+          if-no-files-found: error
+
+  build-mac-aarch64:
+    name: build (mac aarch64)
+    runs-on: [self-hosted, sparse-dynamics, macOS, ARM64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare environment
+        run: |
+          set -euo pipefail
+          echo "$HOME/.nvm/versions/node/v24.15.0/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - run: npm ci
+
+      - name: Smoke (patch, build, unit, integration)
+        run: npm run smoke
+
+      - name: Pack release archive
+        run: npm run pack:release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guardian-mac-aarch64
+          path: dist/guardian-*-mac-aarch64.tar.gz
+          if-no-files-found: error
+
   release:
     name: release
-    needs: [build-linux-x64, build-mac-x64, build-win-x64]
+    needs: [build-linux-aarch64, build-mac-aarch64]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { archiveRootName, packTarGz, packZip } from "./archive.ts";
-import type { HostPlatform } from "./guard.ts";
+import { hostArch, type HostPlatform } from "./guard.ts";
 import {
   GUARDIAN_ENTITLEMENTS_PLIST,
   signGuardianBin,
@@ -13,8 +13,6 @@ const BIN: Record<HostPlatform, string> = {
   mac: "guardian",
   win: "guardian.exe",
 };
-
-const ARCH = "x86_64";
 
 function packageVersion(): string {
   const pkg = JSON.parse(
@@ -44,10 +42,11 @@ export async function packReleaseArchive(
 
   const releaseDir = path.join(REPO_ROOT, "target", "release");
   const version = packageVersion();
+  const arch = hostArch();
   const staging = path.join(
     REPO_ROOT,
     "dist",
-    `guardian-${version}-${platform}-${ARCH}`,
+    `guardian-${version}-${platform}-${arch}`,
   );
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
@@ -73,7 +72,7 @@ export async function packReleaseArchive(
 
   const distDir = path.join(REPO_ROOT, "dist");
   fs.mkdirSync(distDir, { recursive: true });
-  const base = `guardian-${version}-${platform}-${ARCH}`;
+  const base = `guardian-${version}-${platform}-${arch}`;
   const rootName = archiveRootName(staging);
 
   if (platform === "win") {

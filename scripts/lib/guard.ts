@@ -1,6 +1,18 @@
 import os from "node:os";
 
 export type HostPlatform = "linux" | "mac" | "win";
+export type HostArch = "x86_64" | "aarch64";
+
+export function hostArch(): HostArch {
+  switch (os.arch()) {
+    case "x64":
+      return "x86_64";
+    case "arm64":
+      return "aarch64";
+    default:
+      throw new Error(`unsupported architecture: ${os.arch()}`);
+  }
+}
 
 export function hostPlatform(): HostPlatform {
   switch (os.platform()) {
