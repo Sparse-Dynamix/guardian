@@ -155,7 +155,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     mode: "mitm",
     tpf: "pass",
     expectExit: 0,
-    expectStdoutContains: "event: ping",
+    expectStdoutContains: "smoke-sse-alpha",
     target: "remoteSse",
     curlExtra: ["--max-time", "6"],
   },
