@@ -51,6 +51,13 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
       };
     case "localHttp2c":
       return { url: servers.http2c.getUrl };
+    case "localWss":
+      return {
+        url: servers.wss.echoUrl,
+        env: {
+          GUARDIAN_UPSTREAM_TLS: `default+ca:${servers.originCaPem}`,
+        },
+      };
     default:
       return { url: servers.http.getUrl };
   }
@@ -157,6 +164,10 @@ function childArgs(
   url: string,
   caDir: string,
 ): string[] {
+  if (c.ws) {
+    return [config.wsSmoke!, url];
+  }
+
   if (c.printenvVar) {
     if (hostPlatform() === "win") {
       return [resolveExecutable("cmd.exe"), "/c", `echo %${c.printenvVar}%`];

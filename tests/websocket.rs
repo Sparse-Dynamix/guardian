@@ -2,7 +2,10 @@ mod common;
 
 use std::io::Read;
 
-use common::{assert_child_success, assert_no_jsonl_stderr, guardian_bin, require_network};
+use common::{
+    assert_child_success, assert_no_jsonl_stderr, guardian_bin, spawn_test_servers,
+    TestServersConfig,
+};
 use tempfile::TempDir;
 
 fn ws_smoke_bin() -> std::path::PathBuf {
@@ -12,11 +15,8 @@ fn ws_smoke_bin() -> std::path::PathBuf {
 }
 
 #[test]
-#[ignore = "local WSS echo is not yet served by scripts/test-servers.ts"]
-fn wss_echo_passthrough_runs_child() {
-    if !require_network() {
-        return;
-    }
+fn wss_echo_local_passthrough() {
+    let servers = spawn_test_servers(TestServersConfig::default());
     let ws_bin = ws_smoke_bin();
     assert!(
         ws_bin.is_file(),
@@ -31,7 +31,7 @@ fn wss_echo_passthrough_runs_child() {
         ca_dir.path().to_str().unwrap(),
         "--",
         ws_bin.to_str().unwrap(),
-        "wss://echo.websocket.org/",
+        &servers.wss_echo_url,
     ]);
     child.stdin(std::process::Stdio::null());
     child.stdout(std::process::Stdio::piped());

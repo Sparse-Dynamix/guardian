@@ -11,6 +11,7 @@ export interface PlatformConfig {
   childWrapper?: string;
   interruptChild?: string;
   httpSmoke?: string;
+  wsSmoke?: string;
 }
 
 export function platformConfig(): PlatformConfig {
@@ -21,12 +22,14 @@ export function platformConfig(): PlatformConfig {
         guardianBin: path.join(release, "guardian"),
         curl: resolveExecutable("curl"),
         childShell: [resolveExecutable("sh"), "-c"],
+        wsSmoke: path.join(release, "guardian-ws-smoke"),
       };
     case "mac":
       return {
         guardianBin: path.join(release, "guardian"),
         curl: path.join(release, "guardian-curl"),
         httpSmoke: path.join(release, "guardian-http-smoke"),
+        wsSmoke: path.join(release, "guardian-ws-smoke"),
         childWrapper: path.join(release, "guardian-env"),
         interruptChild: path.join(release, "guardian-sleep"),
       };
@@ -35,6 +38,7 @@ export function platformConfig(): PlatformConfig {
         guardianBin: path.join(release, "guardian.exe"),
         curl: resolveExecutable("curl.exe"),
         httpSmoke: path.join(release, "guardian-http-smoke.exe"),
+        wsSmoke: path.join(release, "guardian-ws-smoke.exe"),
       };
   }
 }

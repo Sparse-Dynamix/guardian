@@ -416,6 +416,7 @@ pub struct TestServers {
     pub http_image_png_url: String,
     pub http2_get_url: String,
     pub http2c_get_url: String,
+    pub wss_echo_url: String,
     pub sse_base_url: String,
     pub sse_stream_url: String,
     pub ipv6_base_url: String,
@@ -497,6 +498,7 @@ pub fn spawn_test_servers(config: TestServersConfig) -> TestServers {
     let http = &manifest["http"];
     let http2 = &manifest["http2"];
     let http2c = &manifest["http2c"];
+    let wss = &manifest["wss"];
     let sse = &manifest["sse"];
     let ipv6 = &manifest["ipv6"];
 
@@ -525,6 +527,7 @@ pub fn spawn_test_servers(config: TestServersConfig) -> TestServers {
             .as_str()
             .expect("http2c getUrl")
             .to_string(),
+        wss_echo_url: wss["echoUrl"].as_str().expect("wss echoUrl").to_string(),
         sse_base_url: sse["baseUrl"].as_str().expect("sse baseUrl").to_string(),
         sse_stream_url: sse["streamUrl"]
             .as_str()

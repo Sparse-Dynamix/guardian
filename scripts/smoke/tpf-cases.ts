@@ -6,7 +6,8 @@ export type TpfSmokeTarget =
   | "localSse"
   | "localImage"
   | "localHttp2"
-  | "localHttp2c";
+  | "localHttp2c"
+  | "localWss";
 
 export interface TpfSmokeCase {
   name: string;
@@ -29,6 +30,8 @@ export interface TpfSmokeCase {
   env?: Record<string, string>;
   /** When set, child runs printenv for this variable instead of curl */
   printenvVar?: string;
+  /** When true, child runs guardian-ws-smoke instead of curl */
+  ws?: boolean;
 }
 
 export const tpfSmokeCases: TpfSmokeCase[] = [
@@ -166,5 +169,32 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectContentType: "text/markdown",
     expectStdoutNotContains: ["image/png"],
     target: "localImage",
+  },
+  {
+    name: "mitm_wss_passthrough",
+    mode: "mitm",
+    tpf: "",
+    expectExit: 0,
+    expectStdoutContains: "guardian-smoke",
+    target: "localWss",
+    ws: true,
+  },
+  {
+    name: "mitm_wss_pass",
+    mode: "mitm",
+    tpf: "pass",
+    expectExit: 0,
+    expectStdoutContains: "guardian-smoke",
+    target: "localWss",
+    ws: true,
+  },
+  {
+    name: "mitm_wss_reject",
+    mode: "mitm",
+    tpf: "reject",
+    expectExit: 0,
+    expectStdoutNotContains: ["guardian-smoke"],
+    target: "localWss",
+    ws: true,
   },
 ];

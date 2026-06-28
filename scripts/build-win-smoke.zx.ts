@@ -6,7 +6,7 @@ import { cdRepo, releaseGuardianBin } from "./lib/repo.ts";
 requirePlatform("win");
 cdRepo();
 console.log(`Building guardian in ${process.cwd()}`);
-cargoBuildRelease();
+cargoBuildRelease(["ws-smoke"]);
 
 const out = releaseGuardianBin();
 if (!fs.existsSync(out)) {

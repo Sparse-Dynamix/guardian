@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import fastifySse from "@fastify/sse";
+import fastifyWebsocket from "@fastify/websocket";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -69,6 +70,7 @@ export interface TestServersManifest {
     getUrl: string;
   };
   sse: { baseUrl: string; streamUrl: string };
+  wss: { baseUrl: string; echoUrl: string };
   ipv6: { baseUrl: string };
   originCaPem: string;
 }
@@ -344,6 +346,26 @@ async function createHttp2App(
   return { app, port };
 }
 
+async function createWssEchoApp(
+  keyPem: string,
+  certPem: string,
+): Promise<{ app: FastifyInstance; port: number }> {
+  const app = Fastify({
+    logger: false,
+    https: { key: keyPem, cert: certPem, allowHTTP1: true },
+  });
+  await app.register(fastifyWebsocket);
+
+  app.get("/", { websocket: true }, (socket) => {
+    socket.on("message", (data, isBinary) => {
+      socket.send(data, { binary: isBinary });
+    });
+  });
+
+  const port = await listenFastify(app, "0.0.0.0");
+  return { app, port };
+}
+
 async function createTpfApp(
   swapBody: string,
   rejectNeedle: string | undefined,
@@ -500,10 +522,12 @@ export async function startTestServers(
   let httpApp: FastifyInstance | undefined;
   let http2App: FastifyInstance | undefined;
   let http2cApp: FastifyInstance | undefined;
+  let wssApp: FastifyInstance | undefined;
   let tpfApp: FastifyInstance | undefined;
   let httpPort = 0;
   let http2Port = 0;
   let http2cPort = 0;
+  let wssPort = 0;
   let tpfPort = 0;
   let ipv6Port = 0;
   const ipv6BindHost = `::ffff:${host}`;
@@ -525,6 +549,7 @@ export async function startTestServers(
       certPem,
       false,
     ));
+    ({ app: wssApp, port: wssPort } = await createWssEchoApp(keyPem, certPem));
     ({ app: tpfApp, port: tpfPort } = await createTpfApp(
       swapBody,
       rejectNeedle,
@@ -536,6 +561,7 @@ export async function startTestServers(
       httpApp?.close(),
       http2App?.close(),
       http2cApp?.close(),
+      wssApp?.close(),
       tpfApp?.close(),
       closeHttp(ipv6Server),
     ]);
@@ -548,6 +574,7 @@ export async function startTestServers(
   const loopbackHttpBase = `http://${LOOPBACK_HOST}:${httpPort}`;
   const http2Base = `https://${host}:${http2Port}`;
   const http2cBase = `http://${host}:${http2cPort}`;
+  const wssBase = `wss://${host}:${wssPort}`;
   const sseStreamUrl = `${httpBase}/sse`;
   const ipv6Base = `http://[${ipv6BindHost}]:${ipv6Port}`;
 
@@ -577,6 +604,7 @@ export async function startTestServers(
       getUrl: `${http2cBase}/get`,
     },
     sse: { baseUrl: httpBase, streamUrl: sseStreamUrl },
+    wss: { baseUrl: wssBase, echoUrl: `${wssBase}/` },
     ipv6: { baseUrl: ipv6Base },
     originCaPem: caPemPath,
   };
@@ -588,6 +616,7 @@ export async function startTestServers(
         httpApp?.close(),
         http2App?.close(),
         http2cApp?.close(),
+        wssApp?.close(),
         tpfApp?.close(),
         closeHttp(ipv6Server),
       ]);

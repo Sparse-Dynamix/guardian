@@ -14,7 +14,7 @@ import { cdRepo, releaseGuardianBin, REPO_ROOT } from "./lib/repo.ts";
 requirePlatform("mac");
 cdRepo();
 console.log(`Building guardian in ${process.cwd()}`);
-cargoBuildRelease();
+cargoBuildRelease(["ws-smoke"]);
 
 const out = releaseGuardianBin();
 if (!fs.existsSync(out)) {
@@ -33,6 +33,10 @@ await stageSignedPrintenv(releaseDir);
 const httpSmoke = path.join(releaseDir, "guardian-http-smoke");
 if (fs.existsSync(httpSmoke)) {
   await signGuardianBin(httpSmoke);
+}
+const wsSmoke = path.join(releaseDir, "guardian-ws-smoke");
+if (fs.existsSync(wsSmoke)) {
+  await signGuardianBin(wsSmoke);
 }
 const sleepBin = path.join(releaseDir, "guardian-sleep");
 if (fs.existsSync(sleepBin)) {

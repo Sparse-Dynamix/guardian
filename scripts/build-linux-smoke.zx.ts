@@ -5,5 +5,5 @@ import { cdRepo, releaseGuardianBin } from "./lib/repo.ts";
 requirePlatform("linux");
 cdRepo();
 console.log(`Building guardian in ${process.cwd()}`);
-cargoBuildRelease();
+cargoBuildRelease(["ws-smoke"]);
 console.log(`Linux smoke artifact: ${releaseGuardianBin()}`);

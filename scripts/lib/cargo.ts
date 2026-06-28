@@ -68,6 +68,10 @@ export function runCargo(args: string[]): void {
   }
 }
 
-export function cargoBuildRelease(): void {
-  runCargo(["build", "--release"]);
+export function cargoBuildRelease(features?: string[]): void {
+  const args = ["build", "--release"];
+  if (features?.length) {
+    args.push("--features", features.join(","));
+  }
+  runCargo(args);
 }
