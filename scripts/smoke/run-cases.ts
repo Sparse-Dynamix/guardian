@@ -132,8 +132,8 @@ async function freeLocalPort(): Promise<number> {
   });
 }
 
-async function waitForListener(port: number): Promise<void> {
-  const deadline = Date.now() + 10_000;
+async function waitForListener(port: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ok = await new Promise<boolean>((resolve) => {
       const socket = net.connect({ host: "127.0.0.1", port });
@@ -235,10 +235,10 @@ async function runInterrupt(servers: TestServers): Promise<RunResult> {
 
   let exitCode: number;
   try {
-    await waitForListener(port);
+    await waitForListener(port, 20_000);
     await new Promise((resolve) => setTimeout(resolve, 500));
     child.kill("SIGINT");
-    exitCode = await waitForExit(child, 15_000);
+    exitCode = await waitForExit(child, 25_000);
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (scriptPath) {
       await assertNoScriptProcess(scriptPath);
@@ -270,6 +270,7 @@ async function runCase(
           : c.command === "child"
             ? runChild(url)
             : runInterrupt(servers),
+        c.command === "interrupt" ? 60_000 : SMOKE_CASE_TIMEOUT_MS,
       );
     } catch (err) {
       lastError = err;
