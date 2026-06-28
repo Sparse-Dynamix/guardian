@@ -153,7 +153,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectExit: 0,
     expectStdoutContains: "event: ping",
     target: "localSse",
-    curlExtra: ["-H", "Accept: text/event-stream", "--max-time", "6"],
+    curlExtra: ["--max-time", "6"],
   },
   {
     name: "mitm_image_swap",

@@ -100,6 +100,9 @@ function curlArgs(
   if (includeHeaders) {
     args.push("-i");
   }
+  if (url.includes("/sse")) {
+    args.push("-H", "Accept: text/event-stream");
+  }
   if (hostPlatform() === "mac") {
     args.push("--ipv4");
   }
@@ -200,10 +203,6 @@ function childArgs(
     tpfActive,
   );
 
-  if (hostPlatform() === "win") {
-    return [resolveExecutable("cmd.exe"), "/c", curl.join(" ")];
-  }
-  // Frida spawn attaches to the signed child binary directly (matches integration tests).
   return curl;
 }
 
