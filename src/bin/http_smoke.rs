@@ -25,6 +25,7 @@ async fn run() -> Result<()> {
     let mut force_ipv4 = false;
     let mut include_headers = false;
     let mut max_time_secs: Option<u64> = None;
+    let mut fail_on_http_error = false;
     let mut url = None;
 
     let mut args = std::env::args().skip(1).peekable();
@@ -34,6 +35,7 @@ async fn run() -> Result<()> {
             "--ipv4" => force_ipv4 = true,
             "--http2-prior-knowledge" => h2c_prior_knowledge = true,
             "-i" | "--include" => include_headers = true,
+            "--fail" | "-f" => fail_on_http_error = true,
             "--max-time" => {
                 let secs = args
                     .next()
@@ -48,7 +50,7 @@ async fn run() -> Result<()> {
 
     let url = url.context("usage: guardian-http-smoke [--http2|--http2-prior-knowledge] [--max-time SECS] <url>")?;
     if h2c_prior_knowledge {
-        return run_h2c(&url).await;
+        return run_h2c(&url, fail_on_http_error).await;
     }
 
     let timeout_secs = max_time_secs.unwrap_or(20);
@@ -88,13 +90,13 @@ async fn run() -> Result<()> {
     let body = response.text().await.context("read response body")?;
     print!("{body}");
 
-    if !status.is_success() {
+    if fail_on_http_error && !status.is_success() {
         std::process::exit(22);
     }
     Ok(())
 }
 
-async fn run_h2c(url: &str) -> Result<()> {
+async fn run_h2c(url: &str, fail_on_http_error: bool) -> Result<()> {
     let parsed = Url::parse(url).context("parse h2c URL")?;
     if parsed.scheme() != "http" {
         anyhow::bail!("--http2-prior-knowledge requires an http:// URL");
@@ -156,7 +158,7 @@ async fn run_h2c(url: &str) -> Result<()> {
         print!("{}", String::from_utf8_lossy(&chunk));
     }
 
-    if !status.is_success() {
+    if fail_on_http_error && !status.is_success() {
         std::process::exit(22);
     }
     Ok(())

@@ -139,8 +139,12 @@ function macHttpSmokeArgs(
   url: string,
   curlExtra: string[] = [],
   includeHeaders = false,
+  failOnHttpError = true,
 ): string[] {
   const args = [config.httpSmoke!, "--ipv4"];
+  if (failOnHttpError) {
+    args.push("--fail");
+  }
   if (includeHeaders) {
     args.push("-i");
   }
@@ -198,6 +202,7 @@ function childArgs(
       url,
       c.curlExtra ?? [],
       c.curlIncludeHeaders ?? false,
+      failOnHttpError,
     );
   }
 

@@ -98,7 +98,7 @@ function macHttpSmokeArgs(
   config: ReturnType<typeof platformConfig>,
   url: string,
 ): string[] {
-  return [config.httpSmoke!, "--ipv4", url];
+  return [config.httpSmoke!, "--ipv4", "--fail", url];
 }
 
 async function runChild(url: string): Promise<RunResult> {
