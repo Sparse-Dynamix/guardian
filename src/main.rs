@@ -133,7 +133,10 @@ async fn run_mitm_filtered(settings: Settings) -> Result<i32> {
                 res = tokio::time::timeout(SHUTDOWN_GRACE, &mut injection) => {
                     let outcome = match res {
                         Ok(Ok(Ok(outcome))) => outcome,
-                        _ => SpawnOutcome { exit_code: 130 },
+                        _ => {
+                            injection.abort();
+                            SpawnOutcome { exit_code: 130 }
+                        }
                     };
                     ShutdownPath::Interrupted(outcome)
                 }

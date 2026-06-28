@@ -261,14 +261,24 @@ async function runCase(
   console.log(`==> smoke case: ${c.name}`);
   let lastError: unknown;
   for (let attempt = 1; attempt <= SMOKE_RETRIES; attempt++) {
-    const result = await withSmokeTimeout(
-      `smoke case ${c.name}`,
-      c.command === "direct"
-        ? runDirect(url)
-        : c.command === "child"
-          ? runChild(url)
-          : runInterrupt(servers),
-    );
+    let result: RunResult;
+    try {
+      result = await withSmokeTimeout(
+        `smoke case ${c.name}`,
+        c.command === "direct"
+          ? runDirect(url)
+          : c.command === "child"
+            ? runChild(url)
+            : runInterrupt(servers),
+      );
+    } catch (err) {
+      lastError = err;
+      if (attempt < SMOKE_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw err;
+    }
 
     try {
       assertExit(c.expectExit, result.exitCode);
