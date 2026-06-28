@@ -111,6 +111,11 @@ cargo run --quiet --manifest-path tools/patch-proxyapi/Cargo.toml
 cargo build --release
 ```
 
+## Contributing
+
+- **Commit messages** — use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, etc.).
+- **Before pushing** — run `npm run format` (Biome for JS/TS, `cargo fmt` for Rust).
+
 ## Testing
 
 **Cargo integration** — real Frida/proxy where needed; payload echo tests without network. Integration tests spawn `scripts/test-servers.ts` via `tests/common/mod.rs` (no remote httpbin/httpbingo).
