@@ -14,7 +14,6 @@ permissions:
 jobs:
   build-linux-x64:
     name: build (linux x64)
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -61,7 +60,6 @@ jobs:
 
   build-mac-x64:
     name: build (mac x64)
-    if: false
     runs-on: [self-hosted, sparse-dynamics, macOS, X64]
     timeout-minutes: 30
     steps:
@@ -96,7 +94,6 @@ jobs:
 
   build-win-x64:
     name: build (win x64)
-    if: false
     runs-on: [self-hosted, sparse-dynamics, Windows, X64]
     timeout-minutes: 30
     defaults:
@@ -131,10 +128,8 @@ jobs:
           path: dist/guardian-*-win-x86_64.zip
           if-no-files-found: error
 
-  # Linux aarch64 is green; disabled while stabilizing mac aarch64.
   build-linux-aarch64:
     name: build (linux aarch64)
-    if: false
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -204,7 +199,12 @@ jobs:
 
   release:
     name: release
-    needs: [build-mac-aarch64]
+    needs:
+      - build-linux-x64
+      - build-mac-x64
+      - build-win-x64
+      - build-linux-aarch64
+      - build-mac-aarch64
     runs-on: ubuntu-latest
     permissions:
       contents: write
