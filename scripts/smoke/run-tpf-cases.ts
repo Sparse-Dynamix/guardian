@@ -42,19 +42,22 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
       return { url: servers.http.imagePngUrl };
     case "remoteHttp":
       return {
-        url: process.env.SMOKE_URL ?? "http://httpbingo.org/get",
+        url: process.env.SMOKE_URL ?? servers.http.getUrl,
       };
     case "remoteImage":
       return {
-        url: process.env.SMOKE_IMAGE_URL ?? "https://httpbingo.org/image/png",
+        url: process.env.SMOKE_IMAGE_URL ?? servers.http.imagePngUrl,
       };
     case "remoteSse":
       return {
-        url: process.env.SMOKE_SSE_URL ?? "https://httpbingo.org/sse",
+        url: process.env.SMOKE_SSE_URL ?? `${servers.sse.baseUrl}/`,
       };
     case "remoteHttp2":
       return {
-        url: process.env.SMOKE_HTTPS_URL ?? "https://nghttp2.org/httpbin/get",
+        url: process.env.SMOKE_HTTPS_URL ?? servers.http2.getUrl,
+        env: {
+          GUARDIAN_UPSTREAM_TLS: `default+ca:${servers.originCaPem}`,
+        },
       };
     case "localHttp2":
       return {
@@ -139,6 +142,13 @@ function macHttpSmokeArgs(
   if (includeHeaders) {
     args.push("-i");
   }
+  if (curlExtra.includes("--max-time")) {
+    const idx = curlExtra.indexOf("--max-time");
+    const secs = curlExtra[idx + 1];
+    if (secs) {
+      args.push("--max-time", secs);
+    }
+  }
   if (curlExtra.includes("--http2-prior-knowledge")) {
     args.push("--http2-prior-knowledge");
   } else if (curlExtra.some((flag) => flag.startsWith("--http2"))) {
@@ -180,11 +190,7 @@ function childArgs(
     return args;
   }
 
-  if (
-    hostPlatform() === "mac" &&
-    config.httpSmoke &&
-    !c.curlExtra?.some((flag) => flag.startsWith("--max-time"))
-  ) {
+  if (hostPlatform() === "mac" && config.httpSmoke) {
     return macHttpSmokeArgs(
       config,
       url,

@@ -24,28 +24,39 @@ async fn run() -> Result<()> {
     let mut h2c_prior_knowledge = false;
     let mut force_ipv4 = false;
     let mut include_headers = false;
+    let mut max_time_secs: Option<u64> = None;
     let mut url = None;
 
-    for arg in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--http2" => require_http2 = true,
             "--ipv4" => force_ipv4 = true,
             "--http2-prior-knowledge" => h2c_prior_knowledge = true,
             "-i" | "--include" => include_headers = true,
+            "--max-time" => {
+                let secs = args
+                    .next()
+                    .context("--max-time requires a value")?
+                    .parse::<u64>()
+                    .context("parse --max-time value")?;
+                max_time_secs = Some(secs);
+            }
             _ => url = Some(arg),
         }
     }
 
-    let url = url.context("usage: guardian-http-smoke [--http2|--http2-prior-knowledge] <url>")?;
+    let url = url.context("usage: guardian-http-smoke [--http2|--http2-prior-knowledge] [--max-time SECS] <url>")?;
     if h2c_prior_knowledge {
         return run_h2c(&url).await;
     }
 
+    let timeout_secs = max_time_secs.unwrap_or(20);
     let mut builder = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .no_proxy()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(20));
+        .timeout(Duration::from_secs(timeout_secs));
     if require_http2 {
         builder = builder.http2_prior_knowledge();
     }
