@@ -30,5 +30,9 @@ console.log(
 await stageSignedCurl(releaseDir);
 await stageSignedEnv(releaseDir);
 await stageSignedPrintenv(releaseDir);
+const httpSmoke = path.join(releaseDir, "guardian-http-smoke");
+if (fs.existsSync(httpSmoke)) {
+  await signGuardianBin(httpSmoke);
+}
 await prepareMacSmokePath(releaseDir);
 console.log(`macOS smoke artifact: ${out}`);

@@ -23,6 +23,7 @@ async fn run() -> Result<()> {
     let mut require_http2 = false;
     let mut h2c_prior_knowledge = false;
     let mut force_ipv4 = false;
+    let mut include_headers = false;
     let mut url = None;
 
     for arg in std::env::args().skip(1) {
@@ -30,6 +31,7 @@ async fn run() -> Result<()> {
             "--http2" => require_http2 = true,
             "--ipv4" => force_ipv4 = true,
             "--http2-prior-knowledge" => h2c_prior_knowledge = true,
+            "-i" | "--include" => include_headers = true,
             _ => url = Some(arg),
         }
     }
@@ -63,6 +65,15 @@ async fn run() -> Result<()> {
         "guardian-http-smoke version={:?} status={status}",
         response.version()
     );
+    if include_headers {
+        println!("HTTP/1.1 {status}");
+        for (name, value) in response.headers() {
+            if let Ok(value) = value.to_str() {
+                println!("{name}: {value}");
+            }
+        }
+        println!();
+    }
     let body = response.text().await.context("read response body")?;
     print!("{body}");
 

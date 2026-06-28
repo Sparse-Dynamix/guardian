@@ -129,6 +129,25 @@ function curlArgs(
   return args;
 }
 
+function macHttpSmokeArgs(
+  config: ReturnType<typeof platformConfig>,
+  url: string,
+  curlExtra: string[] = [],
+  includeHeaders = false,
+): string[] {
+  const args = [config.httpSmoke!, "--ipv4"];
+  if (includeHeaders) {
+    args.push("-i");
+  }
+  if (curlExtra.includes("--http2-prior-knowledge")) {
+    args.push("--http2-prior-knowledge");
+  } else if (curlExtra.some((flag) => flag.startsWith("--http2"))) {
+    args.push("--http2");
+  }
+  args.push(url);
+  return args;
+}
+
 function childArgs(
   config: ReturnType<typeof platformConfig>,
   c: TpfSmokeCase,
@@ -159,6 +178,19 @@ function childArgs(
     }
     args.push(url);
     return args;
+  }
+
+  if (
+    hostPlatform() === "mac" &&
+    config.httpSmoke &&
+    !c.curlExtra?.some((flag) => flag.startsWith("--max-time"))
+  ) {
+    return macHttpSmokeArgs(
+      config,
+      url,
+      c.curlExtra ?? [],
+      c.curlIncludeHeaders ?? false,
+    );
   }
 
   const curl = curlArgs(

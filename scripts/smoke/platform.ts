@@ -26,6 +26,7 @@ export function platformConfig(): PlatformConfig {
       return {
         guardianBin: path.join(release, "guardian"),
         curl: path.join(release, "guardian-curl"),
+        httpSmoke: path.join(release, "guardian-http-smoke"),
         childWrapper: path.join(release, "guardian-env"),
         interruptChild: path.join(release, "guardian-sleep"),
       };

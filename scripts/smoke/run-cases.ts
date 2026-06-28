@@ -85,14 +85,20 @@ function shellQuote(arg: string): string {
 async function runDirect(url: string): Promise<RunResult> {
   const config = platformConfig();
   const caDir = makeCaDir();
-  const guardianArgs: string[] = [
-    "--ca-dir",
-    caDir,
-    "--",
-    config.curl,
-    ...curlArgs(url),
-  ];
+  const guardianArgs: string[] = ["--ca-dir", caDir, "--"];
+  if (hostPlatform() === "mac" && config.httpSmoke) {
+    guardianArgs.push(...macHttpSmokeArgs(config, url));
+  } else {
+    guardianArgs.push(config.curl, ...curlArgs(url));
+  }
   return runGuardian(guardianArgs);
+}
+
+function macHttpSmokeArgs(
+  config: ReturnType<typeof platformConfig>,
+  url: string,
+): string[] {
+  return [config.httpSmoke!, "--ipv4", url];
 }
 
 async function runChild(url: string): Promise<RunResult> {
@@ -101,7 +107,11 @@ async function runChild(url: string): Promise<RunResult> {
   const guardianArgs: string[] = ["--ca-dir", caDir, "--"];
 
   if (config.childWrapper) {
-    guardianArgs.push(config.curl, ...curlArgs(url));
+    if (config.httpSmoke) {
+      guardianArgs.push(...macHttpSmokeArgs(config, url));
+    } else {
+      guardianArgs.push(config.curl, ...curlArgs(url));
+    }
   } else if (hostPlatform() === "win") {
     const cmd = process.env.COMSPEC ?? resolveExecutable("cmd.exe");
     guardianArgs.push(cmd, "/c", config.curl, ...curlArgs(url));
