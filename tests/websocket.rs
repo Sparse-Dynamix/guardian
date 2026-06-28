@@ -12,6 +12,7 @@ fn ws_smoke_bin() -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "local WSS echo is not yet served by scripts/test-servers.ts"]
 fn wss_echo_passthrough_runs_child() {
     if !require_network() {
         return;

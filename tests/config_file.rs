@@ -3,7 +3,10 @@ mod common;
 use std::fs;
 use std::io::Write;
 
-use common::{assert_child_success, require_network, run_guardian_with_options, GuardianOptions};
+use common::{
+    assert_child_success, require_network, run_guardian_with_options, spawn_test_servers,
+    GuardianOptions, TestServersConfig,
+};
 use tempfile::TempDir;
 
 #[test]
@@ -18,8 +21,10 @@ fn config_file_settings_apply() {
     let mut f = fs::File::create(&cfg_path).unwrap();
     writeln!(f, "bind = \"127.0.0.1\"").unwrap();
 
+    let servers = spawn_test_servers(TestServersConfig::default());
     let run = run_guardian_with_options(GuardianOptions {
         config: Some(cfg_path),
+        url: Some(servers.http_get_url.clone()),
         ..GuardianOptions::default()
     })
     .expect("failed to spawn guardian");

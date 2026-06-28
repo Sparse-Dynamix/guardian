@@ -16,7 +16,7 @@ fn mitm_swap_replaces_body_and_content_type() {
         ..TestServersConfig::default()
     });
     let opts = GuardianOptions {
-        url: Some(common::smoke_url()),
+        url: Some(servers.http_get_url.clone()),
         trypanophobe_filter: Some(servers.swap_url.clone()),
         trypanophobe_swap: true,
         curl_include_headers: true,

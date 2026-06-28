@@ -26,7 +26,7 @@ fn fixed_port_filtered_mitm_runs_child() {
     let servers = spawn_test_servers(TestServersConfig::default());
     let run = run_guardian_with_options(GuardianOptions {
         port: Some(18081),
-        url: Some(common::smoke_url()),
+        url: Some(servers.http_get_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
         ..GuardianOptions::default()
     })

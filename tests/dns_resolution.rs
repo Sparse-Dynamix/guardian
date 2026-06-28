@@ -100,9 +100,16 @@ fn spawned_curl_resolves_without_manual_resolve() {
         return;
     }
 
+    let servers = common::spawn_test_servers(common::TestServersConfig::default());
     let curl = common::curl_program();
     let run = run_guardian_program(
-        &[&curl, "-sSf", "--max-time", "15", "http://example.com/"],
+        &[
+            &curl,
+            "-sSf",
+            "--max-time",
+            "15",
+            &servers.http_get_url,
+        ],
         Duration::from_secs(30),
     )
     .expect("failed to run guardian");

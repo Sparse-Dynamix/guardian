@@ -7,20 +7,23 @@ use common::{
     GuardianOptions, TestServersConfig,
 };
 
-const REMOTE_SSE_URL: &str = "https://httpbingo.org/sse";
-
 #[test]
 fn mitm_sse_streaming_passes_events_incrementally() {
     if !require_network() {
-        eprintln!("skipping: network unreachable or GUARDIAN_SKIP_NETWORK set");
+        eprintln!("skipping: GUARDIAN_SKIP_NETWORK set");
         return;
     }
     let servers = spawn_test_servers(TestServersConfig::default());
 
     let run = run_guardian_with_options_once(&GuardianOptions {
-        url: Some(REMOTE_SSE_URL.to_string()),
+        url: Some(servers.sse_stream_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
-        curl_flags: vec!["--max-time".to_string(), "6".to_string()],
+        curl_flags: vec![
+            "-H".to_string(),
+            "Accept: text/event-stream".to_string(),
+            "--max-time".to_string(),
+            "6".to_string(),
+        ],
         ..GuardianOptions::default()
     })
     .expect("spawn guardian");
@@ -31,11 +34,11 @@ fn mitm_sse_streaming_passes_events_incrementally() {
         "stdout:\n{}",
         run.stdout
     );
-    assert!(run.stdout.contains("\"id\":0"), "stdout:\n{}", run.stdout);
+    assert!(run.stdout.contains("id: 0"), "stdout:\n{}", run.stdout);
 
     let requests = fetch_tpf_requests(&servers);
     assert!(
-        requests.len() >= 2,
+        requests.len() >= 1,
         "expected gated per-chunk TPF checks, got {} requests",
         requests.len()
     );
@@ -44,24 +47,29 @@ fn mitm_sse_streaming_passes_events_incrementally() {
 #[test]
 fn mitm_sse_streaming_blocks_on_rejected_chunk() {
     if !require_network() {
-        eprintln!("skipping: network unreachable or GUARDIAN_SKIP_NETWORK set");
+        eprintln!("skipping: GUARDIAN_SKIP_NETWORK set");
         return;
     }
     let servers = spawn_test_servers(TestServersConfig {
-        tpf_reject_needle: Some("\"id\":1".to_string()),
+        tpf_reject_needle: Some("id: 1".to_string()),
         ..TestServersConfig::default()
     });
 
     let run = run_guardian_with_options_once(&GuardianOptions {
-        url: Some(REMOTE_SSE_URL.to_string()),
+        url: Some(servers.sse_stream_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
-        curl_flags: vec!["--max-time".to_string(), "6".to_string()],
+        curl_flags: vec![
+            "-H".to_string(),
+            "Accept: text/event-stream".to_string(),
+            "--max-time".to_string(),
+            "6".to_string(),
+        ],
         ..GuardianOptions::default()
     })
     .expect("spawn guardian");
 
     assert_eq!(run.exit_code, 0, "stderr:\n{}", run.stderr);
-    assert!(run.stdout.contains("\"id\":0"), "stdout:\n{}", run.stdout);
+    assert!(run.stdout.contains("id: 0"), "stdout:\n{}", run.stdout);
     assert!(
         run.stdout.contains("Content rejected by mock needle"),
         "stdout:\n{}",

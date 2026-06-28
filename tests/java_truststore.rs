@@ -1,6 +1,6 @@
 mod common;
 
-use common::{portable_jdk_home, require_network, spawn_tpf_mock};
+use common::{portable_jdk_home, require_network, spawn_test_servers, TestServersConfig};
 
 #[test]
 fn java_truststore_created_when_keytool_available() {
@@ -14,8 +14,8 @@ fn java_truststore_created_when_keytool_available() {
 
     let _mitm_guard = common::acquire_mitm_test_lock();
     let ca_dir = tempfile::TempDir::new().expect("ca dir");
-    let mock = spawn_tpf_mock();
-    let url = common::smoke_url();
+    let servers = spawn_test_servers(TestServersConfig::default());
+    let url = servers.http_get_url.clone();
     let curl = common::curl_program();
     let mut cmd = std::process::Command::new(common::guardian_bin());
     cmd.env("JAVA_HOME", &java_home);
@@ -24,7 +24,7 @@ fn java_truststore_created_when_keytool_available() {
         "--ca-dir",
         ca_dir.path().to_str().unwrap(),
         "--tpf",
-        &mock.pass_url,
+        &servers.pass_url,
         "--",
         &curl,
         "-sS",

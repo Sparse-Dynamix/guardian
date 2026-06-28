@@ -70,6 +70,14 @@ async fn run() -> Result<()> {
         .build()
         .context("build HTTP client")?
         .get(&url)
+        .header(
+            "Accept",
+            if url.contains("/sse") {
+                "text/event-stream"
+            } else {
+                "*/*"
+            },
+        )
         .send()
         .await
         .context("HTTP request failed")?;

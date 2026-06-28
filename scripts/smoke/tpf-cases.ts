@@ -5,10 +5,6 @@ export type TpfSmokeTarget =
   | "localLoopback"
   | "localSse"
   | "localImage"
-  | "remoteHttp"
-  | "remoteImage"
-  | "remoteSse"
-  | "remoteHttp2"
   | "localHttp2"
   | "localHttp2c";
 
@@ -111,7 +107,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    target: "remoteHttp",
+    target: "localHttp",
   },
   {
     name: "mitm_reject",
@@ -119,7 +115,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "reject",
     expectExit: 0,
     expectStdoutContains: "All content chunks flagged",
-    target: "remoteHttp",
+    target: "localHttp",
   },
   {
     name: "mitm_swap",
@@ -130,7 +126,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "SWAPPED_BODY",
     curlIncludeHeaders: true,
     expectContentType: "text/markdown",
-    target: "remoteHttp",
+    target: "localHttp",
   },
   {
     name: "mitm_http2",
@@ -138,7 +134,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    target: "remoteHttp2",
+    target: "localHttp2",
     curlExtra: ["--http2"],
   },
   {
@@ -147,7 +143,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    target: "remoteHttp2",
+    target: "localHttp2",
     curlExtra: ["--http2"],
   },
   {
@@ -155,9 +151,9 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     mode: "mitm",
     tpf: "pass",
     expectExit: 0,
-    expectStdoutContains: "smoke-sse-alpha",
-    target: "remoteSse",
-    curlExtra: ["--max-time", "6"],
+    expectStdoutContains: "event: ping",
+    target: "localSse",
+    curlExtra: ["-H", "Accept: text/event-stream", "--max-time", "6"],
   },
   {
     name: "mitm_image_swap",
@@ -169,6 +165,6 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     expectStdoutContains: "swapped by TPF mock",
     expectContentType: "text/markdown",
     expectStdoutNotContains: ["image/png"],
-    target: "remoteImage",
+    target: "localImage",
   },
 ];

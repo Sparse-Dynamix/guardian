@@ -1,35 +1,21 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
-import http2 from "node:http2";
-import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
+
+import fastifySse from "@fastify/sse";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 
 const MANIFEST_PREFIX = "GUARDIAN_TEST_SERVERS ";
 const IMAGE_SWAP_BODY = "# Image description\n\n(swapped by TPF mock)\n";
 const DEFAULT_ORIGIN_HOST = "127.0.0.2";
 const LOOPBACK_HOST = "127.0.0.1";
 
-function firstNonLoopbackIPv4(): string | undefined {
-  for (const entries of Object.values(os.networkInterfaces())) {
-    for (const entry of entries ?? []) {
-      if (entry.family === "IPv4" && !entry.internal) {
-        return entry.address;
-      }
-    }
-  }
-  return undefined;
-}
-
-/** Host clients connect to for MITM smoke (must not be 127/8 — hook bypasses loopback). */
-function mitmOriginHost(): string {
-  return (
-    process.env.GUARDIAN_TEST_MITM_ORIGIN_HOST ??
-    firstNonLoopbackIPv4() ??
-    originHostFromEnv()
-  );
-}
 const MINIMAL_PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
   0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
@@ -38,6 +24,18 @@ const MINIMAL_PNG = Buffer.from([
   0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42,
   0x60, 0x82,
 ]);
+
+interface SseMessage {
+  id?: string;
+  event?: string;
+  data: string | Record<string, number>;
+}
+
+/** Default SSE events for streaming TPF tests (event/id/data shape). */
+const DEFAULT_SSE_MESSAGES: SseMessage[] = [
+  { id: "0", event: "ping", data: { id: 0 } },
+  { id: "1", event: "ping", data: { id: 1 } },
+];
 
 export interface TestServersConfig {
   tpfSwapBody?: string;
@@ -70,7 +68,7 @@ export interface TestServersManifest {
     baseUrl: string;
     getUrl: string;
   };
-  sse: { baseUrl: string };
+  sse: { baseUrl: string; streamUrl: string };
   ipv6: { baseUrl: string };
   originCaPem: string;
 }
@@ -84,60 +82,54 @@ interface RecordedTpfRequest {
   bodyBase64: string;
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
-
-function listen(
-  server: http.Server | http2.Http2Server | http2.Http2SecureServer,
-  host: string,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, host, () => {
-      const addr = server.address();
-      if (!addr || typeof addr === "string") {
-        reject(new Error(`failed to bind on ${host}`));
-        return;
+function firstNonLoopbackIPv4(): string | undefined {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        return entry.address;
       }
-      resolve(addr.port);
-    });
-  });
+    }
+  }
+  return undefined;
 }
 
-function closeServer(
-  server: http.Server | http2.Http2Server | http2.Http2SecureServer,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()));
-  });
+/** Connect target for MITM (127/8 bypasses the Frida hook). */
+function originHost(): string {
+  return (
+    process.env.GUARDIAN_TEST_ORIGIN_HOST ??
+    firstNonLoopbackIPv4() ??
+    DEFAULT_ORIGIN_HOST
+  );
 }
 
 function configFromEnv(): TestServersConfig {
-  const sseRaw =
-    process.env.GUARDIAN_TEST_SSE_EVENTS ?? "smoke-sse-alpha,smoke-sse-beta";
+  const sseRaw = process.env.GUARDIAN_TEST_SSE_EVENTS;
   return {
     tpfSwapBody: process.env.GUARDIAN_TEST_TPF_SWAP_BODY ?? "SWAPPED_BODY",
     tpfRejectNeedle: process.env.GUARDIAN_TEST_TPF_REJECT_NEEDLE,
     sseEvents: sseRaw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
+      ? sseRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined,
   };
 }
 
-function originHostFromEnv(): string {
-  return process.env.GUARDIAN_TEST_ORIGIN_HOST ?? DEFAULT_ORIGIN_HOST;
+function resolveSseMessages(config: TestServersConfig): SseMessage[] {
+  if (!config.sseEvents?.length) {
+    return DEFAULT_SSE_MESSAGES;
+  }
+  return config.sseEvents.map((data, index) => ({
+    id: String(index),
+    event: "message",
+    data,
+  }));
 }
 
 function createOriginTlsMaterial(
   tmpDir: string,
-  originHost: string,
+  host: string,
 ): {
   caPemPath: string;
   certPem: string;
@@ -188,14 +180,14 @@ function createOriginTlsMaterial(
     csrPath,
     "-nodes",
     "-subj",
-    `/CN=${originHost}`,
+    `/CN=${host}`,
   ]);
   const extPath = path.join(tmpDir, "server-ext.cnf");
   fs.writeFileSync(
     extPath,
     [
       "[v3_req]",
-      `subjectAltName = IP:${originHost}`,
+      `subjectAltName = IP:${host}`,
       "keyUsage = digitalSignature, keyEncipherment",
       "extendedKeyUsage = serverAuth",
       "",
@@ -237,22 +229,126 @@ function jsonGetResponse(reqUrl: string, protocol: string): string {
   });
 }
 
-export async function startTestServers(
-  config: TestServersConfig = configFromEnv(),
-): Promise<TestServers> {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "guardian-test-servers-"),
-  );
-  const originHost = mitmOriginHost();
-  const { caPemPath, certPem, keyPem } = createOriginTlsMaterial(
-    tmpDir,
-    originHost,
-  );
-  const tpfRequests: RecordedTpfRequest[] = [];
-  const swapBody = config.tpfSwapBody ?? "SWAPPED_BODY";
-  const rejectNeedle = config.tpfRejectNeedle;
-  const sseEvents = config.sseEvents ?? ["smoke-sse-alpha", "smoke-sse-beta"];
+async function listenFastify(
+  app: FastifyInstance,
+  host: string,
+): Promise<number> {
+  const address = await app.listen({ port: 0, host });
+  return Number(new URL(address).port);
+}
 
+function listenHttp(server: http.Server, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") {
+        reject(new Error(`failed to bind on ${host}`));
+        return;
+      }
+      resolve(addr.port);
+    });
+  });
+}
+
+function closeHttp(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+async function createOriginHttpApp(
+  host: string,
+  sseMessages: SseMessage[],
+): Promise<{ app: FastifyInstance; port: number }> {
+  const app = Fastify({ logger: false });
+  await app.register(fastifySse);
+
+  app.get("/get", async (request, reply) => {
+    const reqUrl = `http://${request.headers.host ?? host}${request.url}`;
+    return reply
+      .header("connection", "close")
+      .type("application/json")
+      .send(jsonGetResponse(reqUrl, "http/1.1"));
+  });
+
+  app.post("/post", async (request, reply) => {
+    const reqUrl = `http://${request.headers.host ?? host}${request.url}`;
+    const raw = request.body;
+    const bytes =
+      typeof raw === "string"
+        ? Buffer.from(raw)
+        : Buffer.isBuffer(raw)
+          ? raw
+          : Buffer.from(JSON.stringify(raw ?? ""));
+    return reply
+      .header("connection", "close")
+      .type("application/json")
+      .send(
+        JSON.stringify({
+          data: bytes.toString("base64"),
+          json: null,
+          url: reqUrl,
+        }),
+      );
+  });
+
+  app.get("/image/png", async (_request, reply) => {
+    return reply
+      .header("connection", "close")
+      .type("image/png")
+      .send(MINIMAL_PNG);
+  });
+
+  app.get("/sse", { sse: true }, async (_request, reply) => {
+    for (const message of sseMessages) {
+      await reply.sse.send({
+        id: message.id,
+        event: message.event,
+        data: message.data,
+      });
+    }
+  });
+
+  const port = await listenFastify(app, "0.0.0.0");
+  return { app, port };
+}
+
+async function createHttp2App(
+  host: string,
+  keyPem: string,
+  certPem: string,
+  tls: boolean,
+): Promise<{ app: FastifyInstance; port: number }> {
+  const app = Fastify({
+    logger: false,
+    http2: true,
+    ...(tls
+      ? {
+          https: {
+            key: keyPem,
+            cert: certPem,
+            allowHTTP1: true,
+          },
+        }
+      : {}),
+  });
+
+  app.get("/get", async (request, reply) => {
+    const scheme = tls ? "https" : "http";
+    const reqUrl = `${scheme}://${request.headers.host ?? host}${request.url}`;
+    return reply.type("application/json").send(jsonGetResponse(reqUrl, "h2"));
+  });
+
+  const port = await listenFastify(app, "0.0.0.0");
+  return { app, port };
+}
+
+async function createTpfApp(
+  swapBody: string,
+  rejectNeedle: string | undefined,
+  tpfRequests: RecordedTpfRequest[],
+): Promise<{ app: FastifyInstance; port: number }> {
   const blockedJson = (
     stage: string,
     reason: string,
@@ -266,15 +362,11 @@ export async function startTestServers(
     });
 
   const handleTpfFilter = (
-    req: IncomingMessage,
-    res: http.ServerResponse,
     pathOnly: string,
+    query: URLSearchParams,
     body: Buffer,
+    reply: FastifyReply,
   ) => {
-    const rawUrl = req.url ?? "";
-    const query = new URLSearchParams(
-      rawUrl.includes("?") ? (rawUrl.split("?")[1] ?? "") : "",
-    );
     const legacyMode =
       pathOnly === "/pass"
         ? "pass"
@@ -288,9 +380,7 @@ export async function startTestServers(
     const mockMode = query.get("mock") ?? legacyMode;
 
     if (pathOnly === "/api/filter" && !query.get("url")?.trim()) {
-      res.writeHead(400, { "Content-Type": "text/plain" });
-      res.end("url query parameter is required");
-      return;
+      return reply.code(400).type("text/plain").send("url query parameter is required");
     }
 
     if (rejectNeedle && body.includes(rejectNeedle)) {
@@ -299,12 +389,7 @@ export async function startTestServers(
         "Content rejected by mock needle",
         rejectNeedle,
       );
-      res.writeHead(406, {
-        "Content-Type": "application/json",
-        "Content-Length": String(Buffer.byteLength(payload)),
-      });
-      res.end(payload);
-      return;
+      return reply.code(406).type("application/json").send(payload);
     }
 
     if (mockMode === "reject") {
@@ -313,67 +398,62 @@ export async function startTestServers(
         "All content chunks flagged",
         "mock reject",
       );
-      res.writeHead(406, {
-        "Content-Type": "application/json",
-        "Content-Length": String(Buffer.byteLength(payload)),
-      });
-      res.end(payload);
-      return;
+      return reply.code(406).type("application/json").send(payload);
     }
 
     if (mockMode === "partial") {
-      const partial = "PARTIAL_SAFE_MD";
-      res.writeHead(206, {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Length": String(Buffer.byteLength(partial)),
-      });
-      res.end(partial);
-      return;
+      return reply
+        .code(206)
+        .type("text/markdown; charset=utf-8")
+        .send("PARTIAL_SAFE_MD");
     }
 
     if (mockMode === "image-swap") {
       if (!body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) {
-        res.writeHead(400);
-        res.end("expected PNG body");
-        return;
+        return reply.code(400).send("expected PNG body");
       }
-      const bytes = Buffer.byteLength(IMAGE_SWAP_BODY);
-      res.writeHead(200, {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Length": String(bytes),
-      });
-      res.end(IMAGE_SWAP_BODY);
-      return;
+      return reply
+        .code(200)
+        .type("text/markdown; charset=utf-8")
+        .send(IMAGE_SWAP_BODY);
     }
 
     if (mockMode === "swap" || query.get("format") === "md") {
-      res.writeHead(200, {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Length": String(Buffer.byteLength(swapBody)),
-      });
-      res.end(swapBody);
-      return;
+      return reply
+        .code(200)
+        .type("text/markdown; charset=utf-8")
+        .send(swapBody);
     }
 
-    res.writeHead(200, { "Content-Length": "0" });
-    res.end();
+    return reply.code(200).send("");
   };
 
-  const tpfServer = http.createServer(async (req, res) => {
-    const pathOnly = (req.url ?? "").split("?")[0] ?? "";
-    if (req.method === "GET" && pathOnly === "/_debug/requests") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(tpfRequests));
-      return;
-    }
-    if (req.method !== "POST") {
-      res.writeHead(405);
-      res.end();
-      return;
-    }
-    const body = await readBody(req);
+  const app = Fastify({ logger: false });
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser(
+    "*",
+    { parseAs: "buffer" },
+    (_request, body, done) => {
+      done(null, body);
+    },
+  );
+
+  app.get("/_debug/requests", async () =>
+    JSON.stringify(tpfRequests),
+  );
+
+  app.post("/*", async (request: FastifyRequest, reply) => {
+    const rawUrl = request.url;
+    const pathOnly = rawUrl.split("?")[0] ?? "";
+    const query = new URLSearchParams(
+      rawUrl.includes("?") ? (rawUrl.split("?")[1] ?? "") : "",
+    );
+    const body = Buffer.isBuffer(request.body)
+      ? request.body
+      : Buffer.from((request.body as string | undefined) ?? "");
+
     tpfRequests.push({
-      pathAndQuery: req.url ?? "",
+      pathAndQuery: rawUrl,
       bodyBase64: body.toString("base64"),
     });
 
@@ -384,100 +464,28 @@ export async function startTestServers(
       pathOnly === "/swap" ||
       pathOnly === "/image-swap"
     ) {
-      handleTpfFilter(req, res, pathOnly, body);
-      return;
+      return handleTpfFilter(pathOnly, query, body, reply);
     }
-    res.writeHead(404);
-    res.end();
+
+    return reply.code(404).send();
   });
 
-  const httpServer = http.createServer(async (req, res) => {
-    const host = req.headers.host ?? originHost;
-    const reqUrl = `http://${host}${req.url ?? "/"}`;
-    const pathOnly = (req.url ?? "").split("?")[0] ?? "";
+  const port = await listenFastify(app, "127.0.0.1");
+  return { app, port };
+}
 
-    if (pathOnly === "/get" && req.method === "GET") {
-      const body = jsonGetResponse(reqUrl, "http/1.1");
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Content-Length": String(Buffer.byteLength(body)),
-        Connection: "close",
-      });
-      res.end(body);
-      return;
-    }
-    if (pathOnly === "/post" && req.method === "POST") {
-      const raw = await readBody(req);
-      const body = JSON.stringify({
-        data: raw.toString("base64"),
-        json: null,
-        url: reqUrl,
-      });
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Content-Length": String(Buffer.byteLength(body)),
-        Connection: "close",
-      });
-      res.end(body);
-      return;
-    }
-    if (pathOnly === "/image/png" && req.method === "GET") {
-      res.writeHead(200, {
-        "Content-Type": "image/png",
-        "Content-Length": String(MINIMAL_PNG.length),
-        Connection: "close",
-      });
-      res.end(MINIMAL_PNG);
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-
-  let http2Port = 0;
-  let http2cPort = 0;
-  const http2cServer = http2.createServer((req, res) => {
-    const pathOnly = (req.url ?? "").split("?")[0] ?? "";
-    if (pathOnly === "/get" && req.method === "GET") {
-      const reqUrl = `http://${originHost}:${http2cPort}/get`;
-      const body = jsonGetResponse(reqUrl, "h2");
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(body);
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  const http2Server = http2.createSecureServer(
-    {
-      key: keyPem,
-      cert: certPem,
-      allowHTTP1: true,
-    },
-    (req, res) => {
-      const pathOnly = (req.url ?? "").split("?")[0] ?? "";
-      if (pathOnly === "/get" && req.method === "GET") {
-        const reqUrl = `https://${originHost}:${http2Port}/get`;
-        const body = jsonGetResponse(reqUrl, "h2");
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(body);
-        return;
-      }
-      res.writeHead(404);
-      res.end();
-    },
+export async function startTestServers(
+  config: TestServersConfig = configFromEnv(),
+): Promise<TestServers> {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "guardian-test-servers-"),
   );
-
-  const sseServer = http.createServer((_req, res) => {
-    const body = sseEvents.map((e) => `data: ${e}\n\n`).join("");
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Transfer-Encoding": "chunked",
-      Connection: "close",
-    });
-    res.write(`${body.length.toString(16)}\r\n${body}\r\n`);
-    res.end("0\r\n\r\n");
-  });
+  const host = originHost();
+  const { caPemPath, certPem, keyPem } = createOriginTlsMaterial(tmpDir, host);
+  const tpfRequests: RecordedTpfRequest[] = [];
+  const swapBody = config.tpfSwapBody ?? "SWAPPED_BODY";
+  const rejectNeedle = config.tpfRejectNeedle;
+  const sseMessages = resolveSseMessages(config);
 
   const ipv6Server = http.createServer((_req, res) => {
     res.writeHead(200, {
@@ -488,37 +496,59 @@ export async function startTestServers(
     res.end("ipv6-works");
   });
 
-  const tpfPort = await listen(tpfServer, "127.0.0.1");
+  let httpApp: FastifyInstance | undefined;
+  let http2App: FastifyInstance | undefined;
+  let http2cApp: FastifyInstance | undefined;
+  let tpfApp: FastifyInstance | undefined;
   let httpPort = 0;
-  let ssePort = 0;
+  let http2Port = 0;
+  let http2cPort = 0;
+  let tpfPort = 0;
   let ipv6Port = 0;
-  const ipv6Host = `::ffff:${originHost}`;
+  const ipv6BindHost = `::ffff:${host}`;
+
   try {
-    httpPort = await listen(httpServer, "0.0.0.0");
-    http2Port = await listen(http2Server, "0.0.0.0");
-    http2cPort = await listen(http2cServer, "0.0.0.0");
-    ssePort = await listen(sseServer, "0.0.0.0");
-    ipv6Port = await listen(ipv6Server, ipv6Host);
+    ({ app: httpApp, port: httpPort } = await createOriginHttpApp(
+      host,
+      sseMessages,
+    ));
+    ({ app: http2App, port: http2Port } = await createHttp2App(
+      host,
+      keyPem,
+      certPem,
+      true,
+    ));
+    ({ app: http2cApp, port: http2cPort } = await createHttp2App(
+      host,
+      keyPem,
+      certPem,
+      false,
+    ));
+    ({ app: tpfApp, port: tpfPort } = await createTpfApp(
+      swapBody,
+      rejectNeedle,
+      tpfRequests,
+    ));
+    ipv6Port = await listenHttp(ipv6Server, ipv6BindHost);
   } catch (err) {
     await Promise.allSettled([
-      closeServer(tpfServer),
-      closeServer(httpServer),
-      closeServer(http2Server),
-      closeServer(http2cServer),
-      closeServer(sseServer),
-      closeServer(ipv6Server),
+      httpApp?.close(),
+      http2App?.close(),
+      http2cApp?.close(),
+      tpfApp?.close(),
+      closeHttp(ipv6Server),
     ]);
     fs.rmSync(tmpDir, { recursive: true, force: true });
     throw err;
   }
 
   const tpfBase = `http://127.0.0.1:${tpfPort}`;
-  const httpBase = `http://${originHost}:${httpPort}`;
+  const httpBase = `http://${host}:${httpPort}`;
   const loopbackHttpBase = `http://${LOOPBACK_HOST}:${httpPort}`;
-  const http2Base = `https://${originHost}:${http2Port}`;
-  const http2cBase = `http://${originHost}:${http2cPort}`;
-  const sseBase = `http://${originHost}:${ssePort}`;
-  const ipv6Base = `http://[${ipv6Host}]:${ipv6Port}`;
+  const http2Base = `https://${host}:${http2Port}`;
+  const http2cBase = `http://${host}:${http2cPort}`;
+  const sseStreamUrl = `${httpBase}/sse`;
+  const ipv6Base = `http://[${ipv6BindHost}]:${ipv6Port}`;
 
   const manifest: TestServersManifest = {
     tpf: {
@@ -545,7 +575,7 @@ export async function startTestServers(
       baseUrl: http2cBase,
       getUrl: `${http2cBase}/get`,
     },
-    sse: { baseUrl: sseBase },
+    sse: { baseUrl: httpBase, streamUrl: sseStreamUrl },
     ipv6: { baseUrl: ipv6Base },
     originCaPem: caPemPath,
   };
@@ -554,12 +584,11 @@ export async function startTestServers(
     ...manifest,
     close: async () => {
       await Promise.all([
-        closeServer(tpfServer),
-        closeServer(httpServer),
-        closeServer(http2Server),
-        closeServer(http2cServer),
-        closeServer(sseServer),
-        closeServer(ipv6Server),
+        httpApp?.close(),
+        http2App?.close(),
+        http2cApp?.close(),
+        tpfApp?.close(),
+        closeHttp(ipv6Server),
       ]);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     },

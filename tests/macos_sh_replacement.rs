@@ -17,7 +17,7 @@ fn shell_exec_replacement_surfaces_reinstrument_failure() {
     };
 
     let servers = spawn_test_servers(TestServersConfig::default());
-    let url = common::smoke_url();
+    let url = servers.http_get_url.clone();
     let inner = format!("{curl} -sSf '{url}'");
 
     let _mitm_guard = common::acquire_mitm_test_lock();

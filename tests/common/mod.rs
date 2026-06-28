@@ -10,9 +10,6 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const DEFAULT_SMOKE_URL: &str = "http://httpbingo.org/get";
-const DEFAULT_HTTPS_SMOKE_URL: &str = "https://nghttp2.org/httpbin/get";
-
 static MITM_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn acquire_mitm_test_lock() -> Option<MutexGuard<'static, ()>> {
@@ -35,14 +32,6 @@ pub struct GuardianRun {
     pub stderr: String,
     #[allow(dead_code)]
     pub _ca_dir: TempDir,
-}
-
-pub fn smoke_url() -> String {
-    std::env::var("SMOKE_URL").unwrap_or_else(|_| DEFAULT_SMOKE_URL.to_string())
-}
-
-pub fn smoke_https_url() -> String {
-    std::env::var("SMOKE_HTTPS_URL").unwrap_or_else(|_| DEFAULT_HTTPS_SMOKE_URL.to_string())
 }
 
 pub fn portable_jdk_home() -> Option<PathBuf> {
@@ -272,9 +261,9 @@ pub fn run_guardian_echo_env_var(
     })
 }
 
-pub fn run_guardian_direct_https() -> std::io::Result<GuardianRun> {
+pub fn run_guardian_direct_https(url: &str) -> std::io::Result<GuardianRun> {
     run_guardian_with_options(GuardianOptions {
-        url: Some(smoke_https_url()),
+        url: Some(url.to_string()),
         ..GuardianOptions::default()
     })
 }
@@ -321,7 +310,10 @@ where
 }
 
 pub fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result<GuardianRun> {
-    let url = opts.url.clone().unwrap_or_else(smoke_url);
+    let url = opts
+        .url
+        .clone()
+        .expect("GuardianOptions.url is required (use spawn_test_servers URLs)");
     let mut args = Vec::new();
     if let Some(port) = opts.port {
         args.push("--port".to_string());
@@ -357,15 +349,14 @@ pub fn run_guardian_with_options_once(opts: &GuardianOptions) -> std::io::Result
     run_guardian_with_args(&args, ca_dir, &env_refs)
 }
 
-pub fn run_guardian_child_spawn() -> std::io::Result<GuardianRun> {
+pub fn run_guardian_child_spawn(url: &str) -> std::io::Result<GuardianRun> {
     run_guardian_http_with_retry(
-        || run_guardian_child_spawn_once(),
+        || run_guardian_child_spawn_once(url),
         |run| child_stdout_ok(run),
     )
 }
 
-fn run_guardian_child_spawn_once() -> std::io::Result<GuardianRun> {
-    let url = smoke_url();
+fn run_guardian_child_spawn_once(url: &str) -> std::io::Result<GuardianRun> {
     let mut args = Vec::new();
     args.push("--ca-dir".to_string());
     let ca_dir = TempDir::new()?;
@@ -377,12 +368,12 @@ fn run_guardian_child_spawn_once() -> std::io::Result<GuardianRun> {
         args.push("/c".to_string());
         args.push(curl_program());
         args.push("-sS".to_string());
-        args.push(url);
+        args.push(url.to_string());
     } else if let Some(wrapper) = child_wrapper_program() {
         args.push(wrapper);
         args.push(curl_program());
         args.push("-sS".to_string());
-        args.push(url);
+        args.push(url.to_string());
     } else {
         let sh = resolve_executable("sh");
         let inner = format!("{} -sS '{}'", curl_program(), url);
@@ -426,6 +417,7 @@ pub struct TestServers {
     pub http2_get_url: String,
     pub http2c_get_url: String,
     pub sse_base_url: String,
+    pub sse_stream_url: String,
     pub ipv6_base_url: String,
     pub origin_ca_pem: PathBuf,
     tpf_base_url: String,
@@ -534,6 +526,10 @@ pub fn spawn_test_servers(config: TestServersConfig) -> TestServers {
             .expect("http2c getUrl")
             .to_string(),
         sse_base_url: sse["baseUrl"].as_str().expect("sse baseUrl").to_string(),
+        sse_stream_url: sse["streamUrl"]
+            .as_str()
+            .expect("sse streamUrl")
+            .to_string(),
         ipv6_base_url: ipv6["baseUrl"].as_str().expect("ipv6 baseUrl").to_string(),
         origin_ca_pem: PathBuf::from(manifest["originCaPem"].as_str().expect("originCaPem")),
         child,
@@ -864,37 +860,9 @@ pub fn assert_no_jsonl_stderr(run: &GuardianRun) {
     );
 }
 
-/// Integration tests need network; skip quickly when offline.
+/// Integration tests may skip when GUARDIAN_SKIP_NETWORK is set.
 pub fn require_network() -> bool {
-    if std::env::var("GUARDIAN_SKIP_NETWORK").is_ok() {
-        return false;
-    }
-    let curl = curl_program();
-    let probe_url = smoke_url();
-    let null_out = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    for attempt in 0..3 {
-        let probe = Command::new(&curl)
-            .args([
-                "-sS",
-                "--connect-timeout",
-                "10",
-                "--max-time",
-                "20",
-                "-o",
-                null_out,
-                &probe_url,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if probe.map(|s| s.success()).unwrap_or(false) {
-            return true;
-        }
-        if attempt < 2 {
-            std::thread::sleep(Duration::from_millis(500));
-        }
-    }
-    false
+    !std::env::var("GUARDIAN_SKIP_NETWORK").is_ok()
 }
 
 #[allow(dead_code)]

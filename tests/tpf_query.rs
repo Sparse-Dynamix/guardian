@@ -13,7 +13,7 @@ fn mitm_tpf_posts_url_query() {
     }
     let servers = spawn_test_servers(TestServersConfig::default());
     let opts = GuardianOptions {
-        url: Some(common::smoke_url()),
+        url: Some(servers.http_get_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
         curl_flags: vec!["--noproxy".to_string(), "*".to_string()],
         ..GuardianOptions::default()

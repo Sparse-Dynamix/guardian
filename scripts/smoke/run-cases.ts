@@ -337,7 +337,7 @@ export async function runSmokeCases(
   const config = platformConfig();
   assertGuardianBuilt(config);
 
-  const url = process.env.SMOKE_URL ?? servers.http.getUrl;
+  const url = servers.http.getUrl;
   let cases = smokeCases;
   if (options?.only) {
     const only = new Set(options.only);

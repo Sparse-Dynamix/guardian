@@ -39,28 +39,9 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
     case "localLoopback":
       return { url: servers.http.loopbackGetUrl };
     case "localSse":
-      return { url: `${servers.sse.baseUrl}/` };
+      return { url: servers.sse.streamUrl };
     case "localImage":
       return { url: servers.http.imagePngUrl };
-    case "remoteHttp":
-      return {
-        url: process.env.SMOKE_URL ?? servers.http.getUrl,
-      };
-    case "remoteImage":
-      return {
-        url: process.env.SMOKE_IMAGE_URL ?? servers.http.imagePngUrl,
-      };
-    case "remoteSse":
-      return {
-        url: process.env.SMOKE_SSE_URL ?? `${servers.sse.baseUrl}/`,
-      };
-    case "remoteHttp2":
-      return {
-        url: process.env.SMOKE_HTTPS_URL ?? servers.http2.getUrl,
-        env: {
-          GUARDIAN_UPSTREAM_TLS: `default+ca:${servers.originCaPem}`,
-        },
-      };
     case "localHttp2":
       return {
         url: servers.http2.getUrl,
@@ -154,6 +135,9 @@ function macHttpSmokeArgs(
     if (secs) {
       args.push("--max-time", secs);
     }
+  }
+  if (url.includes("/sse")) {
+    args.push("-H", "Accept: text/event-stream");
   }
   if (curlExtra.includes("--http2-prior-knowledge")) {
     args.push("--http2-prior-knowledge");

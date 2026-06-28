@@ -24,7 +24,7 @@ fn custom_http_port_filtered_mitm() {
     }
     let servers = spawn_test_servers(TestServersConfig::default());
     let run = run_guardian_with_options(GuardianOptions {
-        url: Some(common::smoke_url()),
+        url: Some(servers.http_get_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
         ..GuardianOptions::default()
     })
