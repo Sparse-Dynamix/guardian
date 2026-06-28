@@ -174,9 +174,7 @@ function childArgs(
   if (hostPlatform() === "win") {
     return [resolveExecutable("cmd.exe"), "/c", curl.join(" ")];
   }
-  if (config.childWrapper) {
-    return [config.childWrapper, ...curl];
-  }
+  // Frida spawn attaches to the signed child binary directly (matches integration tests).
   return curl;
 }
 
@@ -247,7 +245,14 @@ async function runMitmCase(
     args.push("--tps");
   }
   args.push("--", ...childArgs(config, c, url, caDir));
-  return runGuardianProcess(args, undefined, { ...extraEnv, ...c.env });
+  const result = await runGuardianProcess(args, undefined, {
+    ...extraEnv,
+    ...c.env,
+  });
+  if (hostPlatform() === "mac" && c.tpf) {
+    await $({ nothrow: true })`pkill -f ${config.guardianBin}`;
+  }
+  return result;
 }
 
 async function runCase(c: TpfSmokeCase, servers: TestServers): Promise<void> {

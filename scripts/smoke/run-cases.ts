@@ -101,7 +101,7 @@ async function runChild(url: string): Promise<RunResult> {
   const guardianArgs: string[] = ["--ca-dir", caDir, "--"];
 
   if (config.childWrapper) {
-    guardianArgs.push(config.childWrapper, config.curl, ...curlArgs(url));
+    guardianArgs.push(config.curl, ...curlArgs(url));
   } else if (hostPlatform() === "win") {
     const cmd = process.env.COMSPEC ?? resolveExecutable("cmd.exe");
     guardianArgs.push(cmd, "/c", config.curl, ...curlArgs(url));
