@@ -9,13 +9,13 @@ use common::{
 fn loopback_bypass_skips_mitm_tpf_filter() {
     let servers = spawn_test_servers(TestServersConfig::default());
     assert!(
-        servers.http_get_url.starts_with("http://127."),
+        servers.http_loopback_get_url.starts_with("http://127."),
         "expected loopback test server on 127/8, got {}",
-        servers.http_get_url
+        servers.http_loopback_get_url
     );
 
     let run = run_guardian_with_options_once(&GuardianOptions {
-        url: Some(servers.http_get_url.clone()),
+        url: Some(servers.http_loopback_get_url.clone()),
         trypanophobe_filter: Some(servers.pass_url.clone()),
         curl_flags: vec![
             "--connect-timeout".to_string(),

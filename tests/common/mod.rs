@@ -420,6 +420,7 @@ pub struct TestServers {
     pub image_swap_url: String,
     pub partial_url: String,
     pub http_get_url: String,
+    pub http_loopback_get_url: String,
     pub http_post_url: String,
     pub http_image_png_url: String,
     pub http2_get_url: String,
@@ -518,6 +519,10 @@ pub fn spawn_test_servers(config: TestServersConfig) -> TestServers {
         partial_url: tpf["partialUrl"].as_str().expect("partialUrl").to_string(),
         tpf_base_url: tpf["baseUrl"].as_str().expect("tpf baseUrl").to_string(),
         http_get_url: http["getUrl"].as_str().expect("getUrl").to_string(),
+        http_loopback_get_url: http["loopbackGetUrl"]
+            .as_str()
+            .expect("loopbackGetUrl")
+            .to_string(),
         http_post_url: http["postUrl"].as_str().expect("postUrl").to_string(),
         http_image_png_url: http["imagePngUrl"]
             .as_str()

@@ -2,6 +2,7 @@ export type TpfCaseMode = "payload" | "mitm";
 
 export type TpfSmokeTarget =
   | "localHttp"
+  | "localLoopback"
   | "localSse"
   | "localImage"
   | "remoteHttp"
@@ -102,7 +103,7 @@ export const tpfSmokeCases: TpfSmokeCase[] = [
     tpf: "pass",
     expectExit: 0,
     expectStdoutNonempty: true,
-    target: "localHttp",
+    target: "localLoopback",
   },
   {
     name: "mitm_pass",

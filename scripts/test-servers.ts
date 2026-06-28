@@ -8,8 +8,28 @@ import path from "node:path";
 
 const MANIFEST_PREFIX = "GUARDIAN_TEST_SERVERS ";
 const IMAGE_SWAP_BODY = "# Image description\n\n(swapped by TPF mock)\n";
-const DEFAULT_ORIGIN_HOST =
-  os.platform() === "darwin" ? "127.0.0.1" : "127.0.0.2";
+const DEFAULT_ORIGIN_HOST = "127.0.0.2";
+const LOOPBACK_HOST = "127.0.0.1";
+
+function firstNonLoopbackIPv4(): string | undefined {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Host clients connect to for MITM smoke (must not be 127/8 — hook bypasses loopback). */
+function mitmOriginHost(): string {
+  return (
+    process.env.GUARDIAN_TEST_MITM_ORIGIN_HOST ??
+    firstNonLoopbackIPv4() ??
+    originHostFromEnv()
+  );
+}
 const MINIMAL_PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
   0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
@@ -38,6 +58,7 @@ export interface TestServersManifest {
   http: {
     baseUrl: string;
     getUrl: string;
+    loopbackGetUrl: string;
     postUrl: string;
     imagePngUrl: string;
   };
@@ -222,7 +243,7 @@ export async function startTestServers(
   const tmpDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "guardian-test-servers-"),
   );
-  const originHost = originHostFromEnv();
+  const originHost = mitmOriginHost();
   const { caPemPath, certPem, keyPem } = createOriginTlsMaterial(
     tmpDir,
     originHost,
@@ -473,10 +494,10 @@ export async function startTestServers(
   let ipv6Port = 0;
   const ipv6Host = `::ffff:${originHost}`;
   try {
-    httpPort = await listen(httpServer, originHost);
-    http2Port = await listen(http2Server, originHost);
-    http2cPort = await listen(http2cServer, originHost);
-    ssePort = await listen(sseServer, originHost);
+    httpPort = await listen(httpServer, "0.0.0.0");
+    http2Port = await listen(http2Server, "0.0.0.0");
+    http2cPort = await listen(http2cServer, "0.0.0.0");
+    ssePort = await listen(sseServer, "0.0.0.0");
     ipv6Port = await listen(ipv6Server, ipv6Host);
   } catch (err) {
     await Promise.allSettled([
@@ -493,6 +514,7 @@ export async function startTestServers(
 
   const tpfBase = `http://127.0.0.1:${tpfPort}`;
   const httpBase = `http://${originHost}:${httpPort}`;
+  const loopbackHttpBase = `http://${LOOPBACK_HOST}:${httpPort}`;
   const http2Base = `https://${originHost}:${http2Port}`;
   const http2cBase = `http://${originHost}:${http2cPort}`;
   const sseBase = `http://${originHost}:${ssePort}`;
@@ -511,6 +533,7 @@ export async function startTestServers(
     http: {
       baseUrl: httpBase,
       getUrl: `${httpBase}/get`,
+      loopbackGetUrl: `${loopbackHttpBase}/get`,
       postUrl: `${httpBase}/post`,
       imagePngUrl: `${httpBase}/image/png`,
     },

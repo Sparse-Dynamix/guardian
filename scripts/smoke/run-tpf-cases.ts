@@ -36,6 +36,8 @@ function resolveCaseTarget(c: TpfSmokeCase, servers: TestServers): CaseTarget {
   switch (target) {
     case "localHttp":
       return { url: servers.http.getUrl };
+    case "localLoopback":
+      return { url: servers.http.loopbackGetUrl };
     case "localSse":
       return { url: `${servers.sse.baseUrl}/` };
     case "localImage":
